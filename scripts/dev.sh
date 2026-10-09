@@ -13,9 +13,9 @@ mkdir -p "${ROOT}/data"
 cd "${ROOT}"
 
 echo "API http://127.0.0.1:43124"
-ASPNETCORE_URLS="http://127.0.0.1:43124" dotnet run --project api/TenderEvidenceChecker.Api &
+ASPNETCORE_URLS="http://127.0.0.1:43124" dotnet run --no-launch-profile --project api/TenderEvidenceChecker.Api &
 API_PID=$!
-ASPNETCORE_URLS="http://127.0.0.1:0" dotnet run --project api/TenderEvidenceChecker.Api -- --worker &
+dotnet run --no-launch-profile --project api/TenderEvidenceChecker.Api -- --worker &
 WORKER_PID=$!
 
 cleanup() {

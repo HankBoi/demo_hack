@@ -43,10 +43,10 @@ if not exist "%ROOT%\web\node_modules" (
 )
 
 echo Starting API on http://127.0.0.1:43124 ...
-start "Tender Check - API" /D "%ROOT%" cmd /k "set ASPNETCORE_URLS=http://127.0.0.1:43124&& dotnet run --project api\TenderEvidenceChecker.Api"
+start "Tender Check - API" /D "%ROOT%" cmd /k "set ASPNETCORE_URLS=http://127.0.0.1:43124&& dotnet run --no-launch-profile --project api\TenderEvidenceChecker.Api"
 
 echo Starting worker ...
-start "Tender Check - Worker" /D "%ROOT%" cmd /k "set ASPNETCORE_URLS=http://127.0.0.1:0&& dotnet run --project api\TenderEvidenceChecker.Api -- --worker"
+start "Tender Check - Worker" /D "%ROOT%" cmd /k "dotnet run --no-launch-profile --project api\TenderEvidenceChecker.Api -- --worker"
 
 echo Starting web on http://127.0.0.1:43123 ...
 start "Tender Check - Web" /D "%ROOT%\web" cmd /k "set API_PROXY_TARGET=http://127.0.0.1:43124&& set NEXT_PUBLIC_API_BASE_URL=&& pnpm exec next dev --hostname 127.0.0.1 --port 43123"

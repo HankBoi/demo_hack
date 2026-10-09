@@ -76,6 +76,11 @@ builder.Services.AddSingleton<AnalysisProcessor>();
 if (workerMode)
 {
     builder.Services.AddHostedService<JobWorker>();
+    // launchSettings.json gives every `dotnet run` the API port. The worker only polls jobs.
+    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["urls"] = "http://127.0.0.1:0"
+    });
 }
 
 var app = builder.Build();
