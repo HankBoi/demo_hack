@@ -134,6 +134,7 @@
     "model_output_invalid": "Modelin cavabı istifadə oluna bilmədi. Siyahı yarımçıq saxlanmayıb.",
     "analysis_not_found": "Bu analiz tapılmadı və ya silinib.",
     "export_failed": "İxrac hazır deyil. Əvvəl siyahı yaranmalıdır.",
-    "generic": "Əməliyyat alınmadı. Fayllar boş siyahı ilə əvəz olunmayıb."
+    "generic": "Əməliyyat alınmadı. Fayllar boş siyahı ilə əvəz olunmayıb.",
+    "api_down": "API cavab vermir. Backend işləyirsə, bir az sonra yenidən cəhd edin."
   }
 }

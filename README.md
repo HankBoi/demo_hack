@@ -14,10 +14,10 @@ cd web && pnpm install && cd ..
 ```
 
 - App: http://127.0.0.1:43123
-- API: http://127.0.0.1:43124
-- Health: http://127.0.0.1:43124/api/health
+- API, on the same machine as the app: http://127.0.0.1:43124
+- Health through the app: http://127.0.0.1:43123/api/health
 
-`scripts/dev.sh` starts the API, a worker process that polls the job table, and the Next.js dev server. Without the worker, an analysis stays queued.
+`scripts/dev.sh` starts the API, a worker process that polls the job table, and the Next.js dev server. The page calls `/api` on its own address, and Next forwards that to the API. Without the API process, upload fails. Without the worker, an analysis stays queued.
 
 On the home page, **Use the fictional demo pack** loads the invented Azerbaijani tender. On the analysis page, **Add the fictional supplier documents** attaches the synthetic certificates and contracts. The static sample card on the home page is not the result of an analysis.
 

@@ -5,7 +5,9 @@ export PATH="${HOME}/.dotnet:${PATH}"
 export DOTNET_ROOT="${HOME}/.dotnet"
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 export ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Development}"
-export NEXT_PUBLIC_API_BASE_URL="${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:43124}"
+# The browser calls the Next server. Next forwards /api to the API on this machine.
+export API_PROXY_TARGET="${API_PROXY_TARGET:-http://127.0.0.1:43124}"
+unset NEXT_PUBLIC_API_BASE_URL
 
 mkdir -p "${ROOT}/data"
 cd "${ROOT}"

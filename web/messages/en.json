@@ -134,6 +134,7 @@
     "model_output_invalid": "The model response could not be used. No partial checklist was saved.",
     "analysis_not_found": "That analysis does not exist, or it was deleted.",
     "export_failed": "Export is not ready. A checklist has to exist first.",
-    "generic": "That action failed. Files were not replaced with an empty checklist."
+    "generic": "That action failed. Files were not replaced with an empty checklist.",
+    "api_down": "The API is not responding. If the backend is starting, try again in a moment."
   }
 }

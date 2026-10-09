@@ -1,5 +1,6 @@
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:43124";
+// Empty means "same host as this page". Next forwards /api to the API process.
+// A browser on another machine must not call 127.0.0.1:43124 directly.
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 export class ApiError extends Error {
   code: string;
