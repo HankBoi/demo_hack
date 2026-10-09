@@ -52,6 +52,15 @@ Usage and subscription state are stored server-side in the SQLite database, in a
 - Use only synthetic or permitted public documents during the demo. Uploaded documents are sent to the model service for analysis.
 - `OCR_ENABLED` defaults to false. Pages without readable text stay visible as unread and are listed in the result.
 
+## Deploy on Railway
+
+Two services from this repo, each with its own root directory:
+
+1. **API**: root `api/`, uses `api/Dockerfile`. Add a volume mounted at `/data`. Set `GEMINI_API_KEY` (and optionally `GEMINI_MODEL_ID`). The API listens on Railway's `PORT`, and `EMBED_WORKER=1` (set in the Dockerfile) runs the job worker inside the same process, so no second service is needed.
+2. **Web**: root `web/`, build `pnpm install --frozen-lockfile && pnpm build`, start `pnpm start`. Set `API_PROXY_TARGET` to the API service's private URL (for example `http://<api-service>.railway.internal:<PORT>`). Leave `NEXT_PUBLIC_API_BASE_URL` empty so the browser calls `/api` on the web service.
+
+The demo subscription still processes no real payment. There is no login, so everyone who opens the public URL shares one workspace. Keep real confidential documents out of a public demo.
+
 ## Checks
 
 ```bash

@@ -4,7 +4,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { useQuota } from "@/lib/hooks";
 import { LOCALES, useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { FileSearch, FolderOpen, History, Home, Menu, PlusCircle, Sparkles, X } from "lucide-react";
+import { FolderOpen, History, Home, Menu, PlusCircle, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -31,9 +31,9 @@ export function SiteHeader() {
     <header className="sticky top-0 z-40 border-b border-white/10 bg-[#04120c]/70 backdrop-blur-xl">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
         <Link href="/" className="flex min-w-0 items-center gap-2.5 rounded-xl">
-          <span className="glass grid size-10 shrink-0 place-items-center rounded-xl text-mint">
-            <FileSearch aria-hidden="true" className="size-5" />
-          </span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/kubera-logo.png" alt="" width={40} height={40} className="size-10 shrink-0 object-contain drop-shadow-[0_0_8px_rgba(167,243,208,0.35)]" />
+          
           <span className="min-w-0">
             <span className="block truncate text-base leading-tight font-semibold">{t("productName")}</span>
             <span className="block text-[11px] tracking-[0.14em] text-accent uppercase">{t("localDemo")}</span>

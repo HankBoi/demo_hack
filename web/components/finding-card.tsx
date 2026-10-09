@@ -9,20 +9,44 @@ import { Textarea } from "@/components/ui/textarea";
 import { analysisFileUrl, type Requirement } from "@/lib/api";
 import { useErrorText } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
   BadgeCheck,
+  Ban,
+  CheckCircle2,
   CircleHelp,
   ExternalLink,
+  FileX,
   Info,
   Lightbulb,
+  MessageSquarePlus,
+  Pencil,
+  Save,
   ShieldAlert,
   TriangleAlert,
+  XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
 
 type Tone = "high" | "medium" | "low" | "uncertain";
+
+const idle = "border-white/15 bg-white/5 text-foreground hover:border-mint/50 hover:bg-white/10";
+const DECISION_BUTTONS: {
+  decision: string;
+  key: string;
+  icon: LucideIcon;
+  activeClass: string;
+  idleClass: string;
+}[] = [
+  { decision: "confirm", key: "confirm", icon: CheckCircle2, idleClass: "border-emerald-400/40 bg-emerald-400/10 text-emerald-100 hover:bg-emerald-400/20", activeClass: "border-emerald-300 bg-emerald-400 text-emerald-950 shadow-[0_6px_20px_-8px_rgba(52,211,153,0.9)]" },
+  { decision: "edit", key: "edit", icon: Pencil, idleClass: idle, activeClass: "border-mint bg-mint/25 text-white" },
+  { decision: "reject", key: "reject", icon: XCircle, idleClass: "border-red-400/40 bg-red-400/10 text-red-100 hover:bg-red-400/20", activeClass: "border-red-300 bg-red-500 text-white" },
+  { decision: "uncertain", key: "uncertain", icon: CircleHelp, idleClass: idle, activeClass: "border-amber-300 bg-amber-400 text-amber-950" },
+  { decision: "missing", key: "missing", icon: FileX, idleClass: idle, activeClass: "border-mint bg-mint/25 text-white" },
+  { decision: "not_applicable", key: "notApplicable", icon: Ban, idleClass: idle, activeClass: "border-mint bg-mint/25 text-white" },
+];
 
 const severityIcons: Record<Tone, LucideIcon> = {
   high: ShieldAlert,
@@ -226,39 +250,36 @@ export function FindingCard({
             <Label htmlFor={`edit-${requirement.requirement_id}`}>{t("edit")}</Label>
             <Textarea id={`edit-${requirement.requirement_id}`} value={statement} onChange={(event) => setStatement(event.target.value)} />
             <div className="flex gap-2">
-              <Button type="button" size="sm" disabled={locked} onClick={() => void save("edit")}>
+              <Button type="button" disabled={locked} onClick={() => void save("edit")}>
+                <Save aria-hidden="true" className="size-4" />
                 {t("save")}
               </Button>
-              <Button type="button" size="sm" variant="outline" onClick={() => setEditing(false)}>
+              <Button type="button" variant="outline" onClick={() => setEditing(false)}>
                 {t("cancelEdit")}
               </Button>
             </div>
           </div>
         ) : null}
-        <div className="flex flex-wrap gap-2" role="group" aria-label={t("humanDecision")}>
-          {(
-            [
-              ["confirm", "confirm"],
-              ["edit", "edit"],
-              ["reject", "reject"],
-              ["uncertain", "uncertain"],
-              ["missing", "missing"],
-              ["not_applicable", "notApplicable"],
-            ] as const
-          ).map(([decision, key]) => {
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6" role="group" aria-label={t("humanDecision")}>
+          {DECISION_BUTTONS.map(({ decision, key, icon: Icon, activeClass, idleClass }) => {
             const active = requirement.reviewer_decision === decision;
             return (
-              <Button
+              <button
                 key={decision}
                 type="button"
-                size="sm"
-                variant={active ? "default" : "outline"}
                 aria-pressed={active}
                 disabled={locked}
                 onClick={() => (decision === "edit" ? setEditing(true) : void save(decision))}
+                className={cn(
+                  "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2 text-center text-xs leading-tight font-medium transition-all duration-150",
+                  "hover:-translate-y-0.5 active:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mint",
+                  "disabled:pointer-events-none disabled:opacity-50",
+                  active ? activeClass : idleClass,
+                )}
               >
-                {t(key)}
-              </Button>
+                <Icon aria-hidden="true" className="size-4 shrink-0" />
+                <span>{t(key)}</span>
+              </button>
             );
           })}
         </div>
@@ -266,7 +287,8 @@ export function FindingCard({
           <Label htmlFor={`note-${requirement.requirement_id}`}>{t("note")}</Label>
           <Textarea id={`note-${requirement.requirement_id}`} value={note} onChange={(event) => setNote(event.target.value)} />
           <div>
-            <Button type="button" size="sm" variant="outline" disabled={locked} onClick={() => void save("comment")}>
+            <Button type="button" variant="outline" disabled={locked} onClick={() => void save("comment")} className="w-full sm:w-auto">
+              <MessageSquarePlus aria-hidden="true" className="size-4" />
               {t("saveComment")}
             </Button>
           </div>

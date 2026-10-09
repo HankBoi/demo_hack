@@ -19,7 +19,7 @@ public sealed class PdfTextService
         var pages = new List<ExtractedPage>();
         foreach (var page in document.GetPages())
         {
-            var text = page.Text ?? "";
+            var text = ReadableText(page);
             if (text.Length > 80_000)
             {
                 text = text[..80_000];
@@ -35,6 +35,48 @@ public sealed class PdfTextService
         }
 
         return pages;
+    }
+
+    /// <summary>
+    /// Some PDFs place every word by position and contain no space characters, so the raw page text comes out as
+    /// "SonMüraciətTarixi:09Noyabr2026". When the raw text has too few spaces, rebuild the words from glyph positions.
+    /// </summary>
+    private static string ReadableText(UglyToad.PdfPig.Content.Page page)
+    {
+        var raw = page.Text ?? "";
+        if (!LooksSpaceStarved(raw))
+        {
+            return raw;
+        }
+
+        try
+        {
+            var rebuilt = UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor.ContentOrderTextExtractor.GetText(page);
+            return string.IsNullOrWhiteSpace(rebuilt) ? raw : rebuilt;
+        }
+        catch (Exception)
+        {
+            return raw;
+        }
+    }
+
+    private static bool LooksSpaceStarved(string text)
+    {
+        var letters = 0;
+        var spaces = 0;
+        foreach (var ch in text)
+        {
+            if (char.IsLetter(ch))
+            {
+                letters++;
+            }
+            else if (char.IsWhiteSpace(ch))
+            {
+                spaces++;
+            }
+        }
+
+        return letters >= 40 && spaces * 100 < letters * 6;
     }
 
     private static PdfDocument Open(string path)

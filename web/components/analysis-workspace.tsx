@@ -275,7 +275,7 @@ export function AnalysisWorkspace({ id }: { id: string }) {
               </ul>
             </section>
 
-            <aside className="grid gap-4">
+            <aside className="grid min-w-0 gap-4 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto lg:overscroll-contain lg:pr-1 [scrollbar-width:thin]">
               <EvidencePanel
                 busy={busy}
                 blocked={working || analysis.status === "failed" || analysis.status === "cancelled"}
@@ -570,12 +570,12 @@ function PageList({ pages }: { pages: PagePreview[] }) {
   const { t } = useI18n();
   if (pages.length === 0) return null;
   return (
-    <Card className="p-4">
-      <details>
+    <Card className="min-w-0 p-4">
+      <details className="min-w-0">
         <summary className="cursor-pointer font-semibold">
           {t("pages")} ({pages.length})
         </summary>
-        <ul className="mt-3 grid max-h-[28rem] gap-3 overflow-auto pr-1 text-sm">
+        <ul className="mt-3 grid max-h-[24rem] min-w-0 gap-3 overflow-x-hidden overflow-y-auto pr-1 text-sm [overflow-wrap:anywhere]">
           {pages.map((page) => (
             <li key={`${page.file_id}-${page.page_number}`} className="border-t border-white/10 pt-3 first:border-0 first:pt-0">
               <p className="font-medium break-all">
@@ -583,7 +583,7 @@ function PageList({ pages }: { pages: PagePreview[] }) {
               </p>
               <p className="text-muted">{page.usable ? t("readable") : t("notReadable")}</p>
               {page.usable && page.preview ? (
-                <p className="mt-1 font-serif leading-6 select-text">{page.preview}</p>
+                <p className="mt-1 line-clamp-6 leading-6 break-words select-text">{page.preview}</p>
               ) : (
                 <p className="mt-1 text-amber-200">{t("unreadable")}</p>
               )}

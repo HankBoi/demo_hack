@@ -87,6 +87,18 @@ builder.Services.AddSingleton<IModelProvider>(services =>
         ? services.GetRequiredService<UnconfiguredModelProvider>()
         : services.GetRequiredService<GeminiModelProvider>());
 builder.Services.AddSingleton<AnalysisProcessor>();
+// Hosting (for example Railway): listen on the platform's PORT, and optionally run the job worker
+// inside the API process (EMBED_WORKER=1) so one service and one volume are enough.
+var hostedPort = Environment.GetEnvironmentVariable("PORT");
+if (!workerMode && int.TryParse(hostedPort, out var listenPort) && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")))
+{
+    builder.WebHost.UseUrls($"http://0.0.0.0:{listenPort}");
+}
+if (!workerMode && Environment.GetEnvironmentVariable("EMBED_WORKER") == "1")
+{
+    builder.Services.AddHostedService<JobWorker>();
+}
+
 if (workerMode)
 {
     builder.Services.AddHostedService<JobWorker>();
