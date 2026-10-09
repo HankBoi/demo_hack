@@ -239,12 +239,18 @@ public static class Endpoints
                 saved.Add(stored);
             }
 
+            var known = analysis.Files.Where(file => saved.All(item => item.Id != file.Id)).ToList();
             foreach (var file in saved)
             {
-                var earlier = saved.FirstOrDefault(other => other.Id != file.Id && other.Sha256 == file.Sha256);
-                if (earlier is not null && file.DuplicateOfFileId is null)
+                var earlier = known.FirstOrDefault(other => other.Sha256 == file.Sha256 && other.DuplicateOfFileId is null)
+                    ?? known.FirstOrDefault(other => other.Sha256 == file.Sha256);
+                if (earlier is not null)
                 {
                     file.DuplicateOfFileId = earlier.Id;
+                }
+                else
+                {
+                    known.Add(file);
                 }
             }
 

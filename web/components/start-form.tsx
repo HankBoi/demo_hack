@@ -76,13 +76,21 @@ export function StartForm() {
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="tender-file">{t("tenderFile")}</Label>
-          <Input
+          <input
             id="tender-file"
             name="file"
+            className="sr-only"
             type="file"
             accept="application/pdf,.pdf"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => document.getElementById("tender-file")?.click()}
+          >
+            {file ? file.name : t("tenderFile")}
+          </Button>
         </div>
         {error ? (
           <Alert className="border-danger/40 text-danger" role="alert">

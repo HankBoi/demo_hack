@@ -251,7 +251,7 @@ function WarningList({ analysis }: { analysis: Analysis }) {
   }
   return (
     <div className="grid gap-2">
-      {active.has(analysis.status) ? <Alert>{t("waitingWorker")}</Alert> : null}
+      {analysis.status === "queued" && analysis.stale ? <Alert>{t("waitingWorker")}</Alert> : null}
       {analysis.stale ? <Alert>{t("stale")}</Alert> : null}
       {demo ? <Alert>{t("demoExtractor")}</Alert> : null}
       {live ? (
@@ -419,17 +419,7 @@ function EvidencePanel({
     <Card className="p-4">
       <h2 className="font-semibold">{t("evidenceTitle")}</h2>
       <p className="mt-1 text-sm leading-6 text-muted">{t("evidenceHint")}</p>
-      <form
-        className="mt-3 grid gap-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const input = event.currentTarget.elements.namedItem("files");
-          const list = input instanceof HTMLInputElement ? Array.from(input.files ?? []) : [];
-          if (list.length === 0) return;
-          onUpload(list);
-          event.currentTarget.reset();
-        }}
-      >
+      <div className="mt-3 grid gap-3">
         <Label htmlFor="evidence-files">{t("addFiles")}</Label>
         <input
           id="evidence-files"
@@ -437,12 +427,22 @@ function EvidencePanel({
           type="file"
           accept="application/pdf,.pdf"
           multiple
-          className="text-sm"
+          className="sr-only"
+          onChange={(event) => {
+            const chosen = Array.from(event.target.files ?? []);
+            event.target.value = "";
+            if (chosen.length > 0) onUpload(chosen);
+          }}
         />
-        <Button type="submit" variant="outline" disabled={busy || blocked}>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy || blocked}
+          onClick={() => document.getElementById("evidence-files")?.click()}
+        >
           {t("addFiles")}
         </Button>
-      </form>
+      </div>
       <div className="mt-3 flex flex-col gap-2">
         <Button type="button" variant="outline" disabled={busy || blocked} onClick={onDemo}>
           {t("addDemoEvidence")}
@@ -492,9 +492,7 @@ function PageList({ pages }: { pages: PagePreview[] }) {
             <p className="font-medium">
               {page.file_name} · {t("page")} {page.page_number}
             </p>
-            <p className="text-muted">
-              {page.usable ? t("readable") : t("notReadable")} · {page.ocr_status}
-            </p>
+            <p className="text-muted">{page.usable ? t("readable") : t("notReadable")}</p>
             {page.usable && page.preview ? (
               <p className="mt-1 font-serif leading-6 select-text">{page.preview}</p>
             ) : (
