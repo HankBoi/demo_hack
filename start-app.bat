@@ -10,7 +10,9 @@ if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 
 set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
 if not defined ASPNETCORE_ENVIRONMENT set "ASPNETCORE_ENVIRONMENT=Development"
-if not defined NEXT_PUBLIC_API_BASE_URL set "NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:43124"
+if not defined API_PROXY_TARGET set "API_PROXY_TARGET=http://127.0.0.1:43124"
+REM The page calls its own /api path. Next forwards that to the API.
+set "NEXT_PUBLIC_API_BASE_URL="
 
 where dotnet >nul 2>nul
 if errorlevel 1 (
@@ -47,16 +49,30 @@ echo Starting worker ...
 start "Tender Check - Worker" /D "%ROOT%" cmd /k "set ASPNETCORE_URLS=http://127.0.0.1:0&& dotnet run --project api\TenderEvidenceChecker.Api -- --worker"
 
 echo Starting web on http://127.0.0.1:43123 ...
-start "Tender Check - Web" /D "%ROOT%\web" cmd /k "pnpm exec next dev --hostname 127.0.0.1 --port 43123"
+start "Tender Check - Web" /D "%ROOT%\web" cmd /k "set API_PROXY_TARGET=http://127.0.0.1:43124&& set NEXT_PUBLIC_API_BASE_URL=&& pnpm exec next dev --hostname 127.0.0.1 --port 43123"
 
-echo Waiting for services to come up, then opening the browser...
-timeout /t 15 /nobreak >nul
+echo Waiting for the API window to answer...
+set /a TRIES=0
+:waitapi
+set /a TRIES+=1
+curl -sf http://127.0.0.1:43124/api/health >nul 2>&1
+if not errorlevel 1 goto apiready
+if %TRIES% GEQ 40 (
+  echo [ERROR] The API is not answering on http://127.0.0.1:43124
+  echo Read the "Tender Check - API" window. The page cannot upload until that window stays open.
+  pause
+  exit /b 1
+)
+timeout /t 2 /nobreak >nul
+goto waitapi
+:apiready
+
 start "" "http://127.0.0.1:43123"
 
 echo.
 echo App:    http://127.0.0.1:43123
 echo API:    http://127.0.0.1:43124
-echo Health: http://127.0.0.1:43124/api/health
+echo Health: http://127.0.0.1:43123/api/health
 echo.
-echo Services run in the three opened windows. Close them to stop.
+echo Keep the three windows open. Closing the API window makes upload fail.
 endlocal
