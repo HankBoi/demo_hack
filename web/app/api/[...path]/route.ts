@@ -1,6 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const TARGET = process.env.API_PROXY_TARGET ?? "http://127.0.0.1:43124";
+// Accept a bare host as well as a full URL. Public Railway domains need https, private ones (.railway.internal) use http.
+function normalizeTarget(value: string | undefined): string {
+  const raw = (value ?? "").trim().replace(/\/+$/, "");
+  if (!raw) return "http://127.0.0.1:43124";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `${raw.endsWith(".railway.internal") || /\.railway\.internal:\d+$/.test(raw) ? "http" : "https"}://${raw}`;
+}
+
+const TARGET = normalizeTarget(process.env.API_PROXY_TARGET);
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
