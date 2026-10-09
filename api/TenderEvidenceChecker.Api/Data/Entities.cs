@@ -1,9 +1,49 @@
 namespace TenderEvidenceChecker.Api.Data;
 
+public static class Workspaces
+{
+    /// <summary>
+    /// The single local demo workspace. There is no authentication in this MVP, so every request uses it.
+    /// Real customer access requires authentication and per-user authorization.
+    /// </summary>
+    public static readonly Guid LocalId = new("00000000-0000-0000-0000-000000000001");
+}
+
+public sealed class WorkspaceEntity
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>Successfully completed analyses. Never decremented, so deleting an analysis does not restore the free allowance.</summary>
+    public int CompletedAnalysisCount { get; set; }
+
+    public string SubscriptionStatus { get; set; } = "none";
+    public DateTime? SubscriptionActivatedAt { get; set; }
+    public DateTime? SubscriptionExpiresAt { get; set; }
+}
+
+public sealed class LibraryDocumentEntity
+{
+    public Guid Id { get; set; }
+    public Guid WorkspaceId { get; set; }
+    public string OriginalName { get; set; } = "";
+    public string StoredName { get; set; } = "";
+    public string Sha256 { get; set; } = "";
+    public long SizeBytes { get; set; }
+    public int PageCount { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
 public sealed class AnalysisEntity
 {
     public Guid Id { get; set; }
+    public Guid WorkspaceId { get; set; } = Workspaces.LocalId;
     public string Label { get; set; } = "";
+    public string Language { get; set; } = "az";
+    public bool IsSample { get; set; }
+    public bool QuotaCounted { get; set; }
+    public DateTime? QuotaCountedAt { get; set; }
     public string Status { get; set; } = "queued";
     public string ProgressStage { get; set; } = "queued";
     public string? ErrorCode { get; set; }
@@ -47,11 +87,20 @@ public sealed class PageTextEntity
     public bool Usable { get; set; }
 }
 
+/// <summary>
+/// One AI suggestion: either a tender requirement or a risk finding. Always shown as a suggestion that needs human review.
+/// </summary>
 public sealed class RequirementEntity
 {
     public Guid Id { get; set; }
     public Guid AnalysisId { get; set; }
     public AnalysisEntity? Analysis { get; set; }
+    public string Kind { get; set; } = "requirement";
+    public string Category { get; set; } = "other";
+    public string Severity { get; set; } = "uncertain";
+    public string Explanation { get; set; } = "";
+    public string PossibleImpact { get; set; } = "";
+    public string NextStep { get; set; } = "";
     public string Statement { get; set; } = "";
     public string? EditedStatement { get; set; }
     public string RequirementClass { get; set; } = "uncertain";

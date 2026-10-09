@@ -7,13 +7,26 @@ public sealed class AppOptions
     public int MaxUploadMb { get; set; } = 15;
     public int MaxTenderPages { get; set; } = 40;
     public int MaxEvidenceFiles { get; set; } = 8;
+    public int MaxLibraryDocuments { get; set; } = 30;
     public bool OcrEnabled { get; set; }
-    public int RetentionHours { get; set; } = 24;
-    public string ClaudeModelId { get; set; } = "claude-sonnet-4-5";
-    public string PromptVersion { get; set; } = "2026-10-09.1";
-    public string AnthropicApiKey { get; set; } = "";
-    public int ModelTimeoutSeconds { get; set; } = 45;
+
+    /// <summary>Hours before an analysis is purged automatically. Zero keeps analyses until the user deletes them.</summary>
+    public int RetentionHours { get; set; }
+
+    public string PromptVersion { get; set; } = "2026-10-09.2";
+    public int ModelTimeoutSeconds { get; set; } = 60;
+    public int ModelRetryDelayMs { get; set; } = 1500;
+    public int MaxModelRequestChars { get; set; } = 400_000;
+    public int JobStaleSeconds { get; set; } = 900;
     public DateOnly ReferenceDate { get; set; } = new(2026, 10, 9);
+
+    public string GeminiApiKey { get; set; } = "";
+    public string GeminiModelId { get; set; } = "gemini-3.5-flash-lite";
+
+    public string PaymentsMode { get; set; } = "demo";
+    public decimal DemoMonthlyPriceAzn { get; set; } = 19m;
+    public int FreeAnalysisLimit { get; set; } = 3;
+    public int DemoSubscriptionDays { get; set; } = 30;
 
     public long MaxUploadBytes => Math.Max(1, MaxUploadMb) * 1024L * 1024L;
 }

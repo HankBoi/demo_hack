@@ -1,14 +1,51 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using TenderEvidenceChecker.Api.Data;
 using TenderEvidenceChecker.Api.Services;
 
 namespace TenderEvidenceChecker.Api.Tests.Support;
 
+/// <summary>
+/// Test double for the model boundary. By default it delegates to the rule-based DemoModelProvider
+/// (never registered by the live host). Tests can switch it to fail or to report "not configured".
+/// </summary>
+public sealed class SwitchableProvider : IModelProvider
+{
+    public IModelProvider Inner { get; set; } = new DemoModelProvider();
+    public AppException? Fail { get; set; }
+    public bool Configured { get; set; } = true;
+    public int Calls { get; private set; }
+
+    public string ProviderId => Inner.ProviderId;
+    public string ModelId => Inner.ModelId;
+    public bool IsConfigured => Configured;
+
+    public Task<ModelRequirementDocument> ExtractRequirementsAsync(IReadOnlyList<SourcePage> pages, string language, CancellationToken cancellationToken)
+    {
+        Calls++;
+        return Fail is not null ? throw Fail : Inner.ExtractRequirementsAsync(pages, language, cancellationToken);
+    }
+
+    public Task<ModelEvidenceDocument> MatchEvidenceAsync(IReadOnlyList<RequirementPrompt> requirements, IReadOnlyList<SourcePage> evidencePages, string language, CancellationToken cancellationToken)
+    {
+        Calls++;
+        return Fail is not null ? throw Fail : Inner.MatchEvidenceAsync(requirements, evidencePages, language, cancellationToken);
+    }
+}
+
 public class ApiFactory : WebApplicationFactory<Program>
 {
+    static ApiFactory()
+    {
+        // A developer's local .env must never reach a test run.
+        Environment.SetEnvironmentVariable("TEC_SKIP_DOTENV", "1");
+    }
+
     public string Root { get; } = Path.Combine(Path.GetTempPath(), "tec-" + Guid.NewGuid().ToString("N"));
+    public SwitchableProvider Provider { get; } = new();
 
     public ApiFactory()
     {
@@ -22,6 +59,12 @@ public class ApiFactory : WebApplicationFactory<Program>
         {
             builder.UseSetting(key, value);
         }
+
+        builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IModelProvider>();
+            services.AddSingleton<IModelProvider>(Provider);
+        });
     }
 
     protected virtual Dictionary<string, string?> Settings() => new()
@@ -29,12 +72,14 @@ public class ApiFactory : WebApplicationFactory<Program>
         ["App:DatabaseUrl"] = $"Data Source={Path.Combine(Root, "t.db")}",
         ["App:PrivateUploadDir"] = Path.Combine(Root, "uploads"),
         ["App:ReferenceDate"] = "2026-10-09",
-        ["App:AnthropicApiKey"] = "",
         ["App:MaxUploadMb"] = "1",
         ["App:MaxTenderPages"] = "12",
         ["App:MaxEvidenceFiles"] = "8",
         ["App:RetentionHours"] = "48",
-        ["App:OcrEnabled"] = "false"
+        ["App:OcrEnabled"] = "false",
+        ["App:PaymentsMode"] = "demo",
+        ["App:DemoMonthlyPriceAzn"] = "19",
+        ["App:FreeAnalysisLimit"] = "3"
     };
 
     public async Task DrainAsync()
@@ -48,6 +93,13 @@ public class ApiFactory : WebApplicationFactory<Program>
                 return;
             }
         }
+    }
+
+    public T WithDb<T>(Func<AppDbContext, T> action)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return action(db);
     }
 
     protected override void Dispose(bool disposing)

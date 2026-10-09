@@ -9,13 +9,14 @@ public static class Endpoints
 {
     private static readonly HashSet<string> Decisions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "confirm", "edit", "reject", "uncertain", "not_applicable", "missing"
+        "confirm", "edit", "reject", "uncertain", "not_applicable", "missing", "comment"
     };
 
     public static void MapAppEndpoints(this WebApplication app)
     {
         app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "tender-evidence-checker" }));
 
+        app.MapGet("/api/analyses", ListAnalyses);
         app.MapPost("/api/analyses", CreateAnalysis);
         app.MapGet("/api/analyses/{analysisId:guid}", GetAnalysis);
         app.MapGet("/api/analyses/{analysisId:guid}/requirements", GetRequirements);
@@ -27,12 +28,62 @@ public static class Endpoints
         app.MapPatch("/api/requirements/{requirementId:guid}", PatchRequirement);
         app.MapGet("/api/analyses/{analysisId:guid}/export.csv", Export);
         app.MapDelete("/api/analyses/{analysisId:guid}", DeleteAnalysis);
+
+        app.MapWorkspaceEndpoints();
+    }
+
+    private static async Task<IResult> ListAnalyses(AppDbContext db, CancellationToken cancellationToken)
+    {
+        var rows = await db.Analyses.AsNoTracking()
+            .Where(item => item.WorkspaceId == Workspaces.LocalId)
+            .OrderByDescending(item => item.CreatedAt)
+            .Select(item => new
+            {
+                item.Id,
+                item.Label,
+                item.Status,
+                item.ProgressStage,
+                item.CreatedAt,
+                item.UpdatedAt,
+                item.IsSample,
+                item.Language,
+                item.ErrorCode,
+                item.ModelId,
+                Files = item.Files.Count,
+                Findings = item.Requirements.Count,
+                Reviewed = item.Requirements.Count(requirement => requirement.ReviewerDecision != null),
+                NotVerified = item.Requirements.Count(requirement => !requirement.QuoteVerified)
+            })
+            .ToListAsync(cancellationToken);
+        return Results.Ok(new
+        {
+            analyses = rows.Select(item => new
+            {
+                analysis_id = item.Id,
+                label = item.Label,
+                status = item.Status,
+                progress_stage = item.ProgressStage,
+                created_at = item.CreatedAt,
+                updated_at = item.UpdatedAt,
+                is_sample = item.IsSample,
+                language = item.Language,
+                error_code = item.ErrorCode,
+                model_id = item.ModelId,
+                files = item.Files,
+                findings = item.Findings,
+                reviewed = item.Reviewed,
+                source_not_verified = item.NotVerified
+            })
+        });
     }
 
     private static async Task<IResult> CreateAnalysis(
         HttpRequest request,
         AppDbContext db,
         DocumentUpload uploads,
+        FileStore store,
+        IModelProvider provider,
+        QuotaService quota,
         CancellationToken cancellationToken)
     {
         if (!request.HasFormContentType)
@@ -47,33 +98,114 @@ public static class Endpoints
             return Error("unsupported_file_type", "Name the tender with 2 to 200 characters, then choose a PDF.", false, 400);
         }
 
-        var file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
+        var file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault(item => item.Name != "files");
         if (file is null)
         {
             return Error("unsupported_file_type", "Choose one tender PDF.", false, 400);
         }
 
+        var isSample = string.Equals(form["sample"].ToString(), "true", StringComparison.OrdinalIgnoreCase);
+        if (!provider.IsConfigured)
+        {
+            return Error("model_not_configured", UnconfiguredModelProvider.SetupMessage, false, 503);
+        }
+
+        if (!isSample)
+        {
+            var status = await quota.GetAsync(db, cancellationToken);
+            if (!status.CanStart)
+            {
+                return Error(
+                    "plan_required",
+                    "The free analyses are used. Activate the monthly demo plan to start another analysis.",
+                    false,
+                    402);
+            }
+        }
+
+        var documentIds = new List<Guid>();
+        foreach (var raw in form["document_ids"])
+        {
+            if (!Guid.TryParse(raw, out var parsed))
+            {
+                return Error("document_not_found", "One of the selected company documents was not found.", false, 404);
+            }
+
+            if (!documentIds.Contains(parsed))
+            {
+                documentIds.Add(parsed);
+            }
+        }
+
+        var adHoc = form.Files.GetFiles("files");
+        if (documentIds.Count + adHoc.Count > uploads.FileLimit)
+        {
+            return Error("too_many_files", $"This demo keeps at most {uploads.FileLimit} company documents on one analysis.", false, 400);
+        }
+
+        var library = documentIds.Count == 0
+            ? []
+            : await db.LibraryDocuments.AsNoTracking()
+                .Where(item => item.WorkspaceId == Workspaces.LocalId && documentIds.Contains(item.Id))
+                .ToListAsync(cancellationToken);
+        if (library.Count != documentIds.Count)
+        {
+            return Error("document_not_found", "One of the selected company documents was not found. It may have been deleted.", false, 404);
+        }
+
         var analysis = new AnalysisEntity
         {
             Id = Guid.NewGuid(),
+            WorkspaceId = Workspaces.LocalId,
             Label = label,
+            Language = FindingVocabulary.NormalizeLanguage(form["language"].ToString()),
+            IsSample = isSample,
             Status = "queued",
             ProgressStage = "queued",
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
 
+        var evidence = new List<StoredFileEntity>();
         StoredFileEntity stored;
         try
         {
             stored = await uploads.SaveAsync(analysis.Id, file, "tender", extractText: false, cancellationToken);
+            foreach (var document in library)
+            {
+                var path = store.LibraryPath(document.StoredName);
+                if (!File.Exists(path))
+                {
+                    throw new AppException("document_not_found", "A selected company document is no longer stored. Upload it again.", false, 404);
+                }
+
+                var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+                evidence.Add(await uploads.SaveBytesAsync(analysis.Id, document.OriginalName, bytes, "evidence", extractText: true, cancellationToken));
+            }
+
+            foreach (var upload in adHoc)
+            {
+                evidence.Add(await uploads.SaveAsync(analysis.Id, upload, "evidence", extractText: true, cancellationToken));
+            }
         }
         catch (AppException ex)
         {
+            store.DeleteAnalysis(analysis.Id);
             return Error(ex.Code, ex.UserMessage, ex.Retryable, ex.StatusCode);
         }
+        catch
+        {
+            store.DeleteAnalysis(analysis.Id);
+            throw;
+        }
 
+        MarkDuplicates(evidence, []);
         analysis.Files.Add(stored);
+        foreach (var item in evidence)
+        {
+            analysis.Files.Add(item);
+        }
+
         analysis.Jobs.Add(new JobEntity
         {
             Id = Guid.NewGuid(),
@@ -88,12 +220,27 @@ public static class Endpoints
         {
             analysis_id = analysis.Id,
             status = analysis.Status,
-            accepted_files = new[]
-            {
-                FileDto(stored)
-            },
+            accepted_files = analysis.Files.Select(FileDto),
             warnings = Array.Empty<string>()
         }, statusCode: StatusCodes.Status201Created);
+    }
+
+    private static void MarkDuplicates(IReadOnlyList<StoredFileEntity> added, IReadOnlyList<StoredFileEntity> existing)
+    {
+        var known = existing.ToList();
+        foreach (var file in added)
+        {
+            var earlier = known.FirstOrDefault(other => other.Sha256 == file.Sha256 && other.DuplicateOfFileId is null)
+                ?? known.FirstOrDefault(other => other.Sha256 == file.Sha256);
+            if (earlier is not null)
+            {
+                file.DuplicateOfFileId = earlier.Id;
+            }
+            else
+            {
+                known.Add(file);
+            }
+        }
     }
 
     private static async Task<IResult> GetAnalysis(Guid analysisId, AppDbContext db, CancellationToken cancellationToken)
@@ -111,6 +258,11 @@ public static class Endpoints
         {
             analysis_id = analysis.Id,
             label = analysis.Label,
+            language = analysis.Language,
+            is_sample = analysis.IsSample,
+            quota_counted = analysis.QuotaCounted,
+            created_at = analysis.CreatedAt,
+            updated_at = analysis.UpdatedAt,
             status = analysis.Status,
             progress_stage = analysis.ProgressStage,
             provider_id = analysis.ProviderId,
@@ -125,6 +277,7 @@ public static class Endpoints
                 unreadable_pages = pages.Count(page => !page.Usable),
                 requirements = analysis.Requirements.Count
             },
+            summary = Summary(analysis),
             error = analysis.ErrorCode is null
                 ? null
                 : new
@@ -136,6 +289,49 @@ public static class Endpoints
             warnings = Warnings(analysis),
             files = analysis.Files.Select(FileDto)
         });
+    }
+
+    /// <summary>Counts only. There is intentionally no overall risk score and no outcome probability.</summary>
+    private static object Summary(AnalysisEntity analysis)
+    {
+        var rows = analysis.Requirements;
+        var verified = rows.Where(item => item.QuoteVerified).ToList();
+        var matches = rows.SelectMany(item => item.Matches).ToList();
+        int Severity(string value) => verified.Count(item => item.Severity == value);
+        int Category(string value) => verified.Count(item => item.Category == value);
+        return new
+        {
+            findings_total = rows.Count,
+            source_verified = verified.Count,
+            source_not_verified = rows.Count - verified.Count,
+            requirements = rows.Count(item => item.Kind == "requirement"),
+            risks = rows.Count(item => item.Kind == "risk"),
+            reviewed = rows.Count(item => item.ReviewerDecision is not null),
+            by_severity = new
+            {
+                high = Severity("high"),
+                medium = Severity("medium"),
+                low = Severity("low"),
+                uncertain = Severity("uncertain")
+            },
+            by_category = new
+            {
+                required_document = Category("required_document"),
+                deadline = Category("deadline"),
+                technical_mismatch = Category("technical_mismatch"),
+                contract_terms = Category("contract_terms"),
+                conflicting_unclear = Category("conflicting_unclear"),
+                other = Category("other")
+            },
+            evidence = new
+            {
+                possible_match = matches.Count(item => item.Status == "possible_match"),
+                possible_mismatch = matches.Count(item => item.Status == "possible_mismatch"),
+                not_found_in_uploaded_files = matches.Count(item => item.Status == "not_found"),
+                expiry_date_seen = matches.Count(item => item.Status == "expired_date_detected"),
+                unclear = matches.Count(item => item.Status == "unclear")
+            }
+        };
     }
 
     private static async Task<IResult> GetRequirements(Guid analysisId, AppDbContext db, CancellationToken cancellationToken)
@@ -220,7 +416,7 @@ public static class Endpoints
         var limit = uploads.FileLimit;
         if (existing + incoming.Count > limit)
         {
-            return Error("file_too_large", $"This demo keeps at most {limit} company documents on one analysis.", false, 400);
+            return Error("too_many_files", $"This demo keeps at most {limit} company documents on one analysis.", false, 400);
         }
 
         var saved = new List<StoredFileEntity>();
@@ -240,19 +436,7 @@ public static class Endpoints
             }
 
             var known = analysis.Files.Where(file => saved.All(item => item.Id != file.Id)).ToList();
-            foreach (var file in saved)
-            {
-                var earlier = known.FirstOrDefault(other => other.Sha256 == file.Sha256 && other.DuplicateOfFileId is null)
-                    ?? known.FirstOrDefault(other => other.Sha256 == file.Sha256);
-                if (earlier is not null)
-                {
-                    file.DuplicateOfFileId = earlier.Id;
-                }
-                else
-                {
-                    known.Add(file);
-                }
-            }
+            MarkDuplicates(saved, known);
 
             analysis.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
@@ -269,12 +453,17 @@ public static class Endpoints
         });
     }
 
-    private static async Task<IResult> MatchEvidence(Guid analysisId, AppDbContext db, CancellationToken cancellationToken)
+    private static async Task<IResult> MatchEvidence(Guid analysisId, AppDbContext db, IModelProvider provider, CancellationToken cancellationToken)
     {
         var analysis = await Load(db, analysisId, cancellationToken);
         if (analysis is null)
         {
             return Missing();
+        }
+
+        if (!provider.IsConfigured)
+        {
+            return Error("model_not_configured", UnconfiguredModelProvider.SetupMessage, false, 503);
         }
 
         if (analysis.Requirements.Count == 0 || analysis.Status is "queued" or "processing" or "failed")
@@ -307,7 +496,7 @@ public static class Endpoints
         return Results.Accepted($"/api/analyses/{analysis.Id}", new { job_id = job.Id, status = "queued" });
     }
 
-    private static async Task<IResult> Retry(Guid analysisId, AppDbContext db, CancellationToken cancellationToken)
+    private static async Task<IResult> Retry(Guid analysisId, AppDbContext db, IModelProvider provider, CancellationToken cancellationToken)
     {
         var analysis = await Load(db, analysisId, cancellationToken);
         if (analysis is null)
@@ -318,6 +507,11 @@ public static class Endpoints
         if (analysis.Status != "failed")
         {
             return Error("export_failed", "Retry is available after a failed run. This analysis is not failed.", false, 409);
+        }
+
+        if (!provider.IsConfigured)
+        {
+            return Error("model_not_configured", UnconfiguredModelProvider.SetupMessage, false, 503);
         }
 
         if (analysis.Jobs.Any(job => job.Status is "queued" or "processing"))
@@ -343,7 +537,8 @@ public static class Endpoints
 
     private static async Task<IResult> Cancel(Guid analysisId, AppDbContext db, CancellationToken cancellationToken)
     {
-        var analysis = await db.Analyses.Include(item => item.Jobs).FirstOrDefaultAsync(item => item.Id == analysisId, cancellationToken);
+        var analysis = await db.Analyses.Include(item => item.Jobs)
+            .FirstOrDefaultAsync(item => item.Id == analysisId && item.WorkspaceId == Workspaces.LocalId, cancellationToken);
         if (analysis is null)
         {
             return Missing();
@@ -375,7 +570,7 @@ public static class Endpoints
     {
         var requirement = await db.Requirements
             .Include(item => item.Analysis)
-            .FirstOrDefaultAsync(item => item.Id == requirementId, cancellationToken);
+            .FirstOrDefaultAsync(item => item.Id == requirementId && item.Analysis!.WorkspaceId == Workspaces.LocalId, cancellationToken);
         if (requirement?.Analysis is null)
         {
             return Missing();
@@ -384,17 +579,22 @@ public static class Endpoints
         var decision = (body.Decision ?? "").Trim().ToLowerInvariant();
         if (!Decisions.Contains(decision))
         {
-            return Error("export_failed", "Choose confirm, edit, reject, uncertain, missing, or not applicable.", false, 400);
+            return Error("review_invalid", "Choose confirm, edit, reject, uncertain, missing, not applicable, or comment.", false, 400);
         }
 
-        if (decision == "not_applicable" && string.IsNullOrWhiteSpace(body.Note))
+        if (decision is "not_applicable" or "comment" && string.IsNullOrWhiteSpace(body.Note))
         {
-            return Error("export_failed", "Marking a row not applicable needs a short note.", false, 400);
+            return Error("note_required", "This decision needs a short note.", false, 400);
         }
 
         if (decision == "edit" && string.IsNullOrWhiteSpace(body.Statement))
         {
-            return Error("export_failed", "Write the corrected requirement before saving an edit.", false, 400);
+            return Error("statement_required", "Write the corrected requirement before saving an edit.", false, 400);
+        }
+
+        if ((body.Note?.Length ?? 0) > 2000 || (body.Statement?.Length ?? 0) > 2000)
+        {
+            return Error("review_invalid", "Notes and edited statements are limited to 2000 characters.", false, 400);
         }
 
         if (string.IsNullOrWhiteSpace(requirement.AiSnapshotJson))
@@ -402,29 +602,30 @@ public static class Endpoints
             requirement.AiSnapshotJson = JsonSerializer.Serialize(new { statement = requirement.Statement, review_status = requirement.ReviewStatus });
         }
 
+        if (decision == "comment")
+        {
+            // A comment keeps the AI suggestion and any earlier decision untouched.
+            requirement.HumanNote = body.Note!.Trim();
+            requirement.Analysis.UpdatedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            return Results.Ok(RequirementDto(requirement, await FilesFor(db, requirement.AnalysisId, cancellationToken)));
+        }
+
         requirement.ReviewerDecision = decision;
         requirement.HumanNote = string.IsNullOrWhiteSpace(body.Note) ? requirement.HumanNote : body.Note.Trim();
         requirement.ReviewedAt = DateTime.UtcNow;
+        requirement.ReviewStatus = decision switch
+        {
+            "edit" => "changed",
+            "confirm" => "confirmed",
+            "not_applicable" => "not_applicable",
+            "missing" => "missing",
+            "reject" => "rejected",
+            _ => "unclear"
+        };
         if (decision == "edit")
         {
             requirement.EditedStatement = body.Statement!.Trim();
-            requirement.ReviewStatus = "changed";
-        }
-        else if (decision == "confirm")
-        {
-            requirement.ReviewStatus = "confirmed";
-        }
-        else if (decision == "not_applicable")
-        {
-            requirement.ReviewStatus = "not_applicable";
-        }
-        else if (decision == "missing")
-        {
-            requirement.ReviewStatus = "missing";
-        }
-        else
-        {
-            requirement.ReviewStatus = "unclear";
         }
 
         requirement.Analysis.UpdatedAt = DateTime.UtcNow;
@@ -432,11 +633,7 @@ public static class Endpoints
         var allDecided = siblings.All(item => item.Id == requirement.Id || item.ReviewerDecision is not null);
         if (allDecided)
         {
-            var unresolved = siblings.Any(item =>
-            {
-                var status = item.Id == requirement.Id ? requirement.ReviewStatus : item.ReviewStatus;
-                return status is "missing" or "expired" or "unclear" or "not_reviewed" or "evidence_suggested";
-            });
+            var unresolved = siblings.Any(item => item.ReviewStatus is "missing" or "expired" or "unclear" or "not_reviewed" or "evidence_suggested");
             requirement.Analysis.Status = unresolved ? "completed_with_unresolved_items" : "completed";
             requirement.Analysis.ProgressStage = requirement.Analysis.Status;
         }
@@ -446,11 +643,16 @@ public static class Endpoints
         }
 
         await db.SaveChangesAsync(cancellationToken);
-        var files = await db.Files.Include(file => file.Pages).Where(file => file.AnalysisId == requirement.AnalysisId).ToListAsync(cancellationToken);
-        return Results.Ok(RequirementDto(requirement, files.ToDictionary(file => file.Id)));
+        return Results.Ok(RequirementDto(requirement, await FilesFor(db, requirement.AnalysisId, cancellationToken)));
     }
 
-    private static async Task<IResult> Export(Guid analysisId, AppDbContext db, CancellationToken cancellationToken)
+    private static async Task<Dictionary<Guid, StoredFileEntity>> FilesFor(AppDbContext db, Guid analysisId, CancellationToken cancellationToken)
+    {
+        var files = await db.Files.Include(file => file.Pages).Where(file => file.AnalysisId == analysisId).ToListAsync(cancellationToken);
+        return files.ToDictionary(file => file.Id);
+    }
+
+    private static async Task<IResult> Export(Guid analysisId, HttpRequest request, AppDbContext db, CancellationToken cancellationToken)
     {
         var analysis = await Load(db, analysisId, cancellationToken);
         if (analysis is null)
@@ -467,7 +669,7 @@ public static class Endpoints
                 409);
         }
 
-        var bytes = CsvExporter.Build(analysis);
+        var bytes = CsvExporter.Build(analysis, request.Query["lang"].ToString());
         return Results.File(bytes, "text/csv; charset=utf-8", "tender-checklist.csv");
     }
 
@@ -477,7 +679,8 @@ public static class Endpoints
         FileStore store,
         CancellationToken cancellationToken)
     {
-        var analysis = await db.Analyses.FirstOrDefaultAsync(item => item.Id == analysisId, cancellationToken);
+        var analysis = await db.Analyses
+            .FirstOrDefaultAsync(item => item.Id == analysisId && item.WorkspaceId == Workspaces.LocalId, cancellationToken);
         if (analysis is null)
         {
             return Missing();
@@ -489,7 +692,7 @@ public static class Endpoints
         return Results.Ok(new { status = "deleted" });
     }
 
-    private static async Task<AnalysisEntity?> Load(AppDbContext db, Guid id, CancellationToken cancellationToken)
+    internal static async Task<AnalysisEntity?> Load(AppDbContext db, Guid id, CancellationToken cancellationToken)
     {
         return await db.Analyses
             .Include(item => item.Files)
@@ -497,10 +700,11 @@ public static class Endpoints
             .Include(item => item.Requirements)
             .ThenInclude(requirement => requirement.Matches)
             .Include(item => item.Jobs)
-            .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(item => item.Id == id && item.WorkspaceId == Workspaces.LocalId, cancellationToken);
     }
 
-    private static object FileDto(StoredFileEntity file) => new
+    internal static object FileDto(StoredFileEntity file) => new
     {
         file_id = file.Id,
         original_name = file.OriginalName,
@@ -510,7 +714,7 @@ public static class Endpoints
         sha256 = file.Sha256,
         status = file.Status,
         duplicate_of_file_id = file.DuplicateOfFileId,
-        unreadable_pages = file.Pages.Where(page => !page.Usable).Select(page => page.PageNumber).ToArray()
+        unreadable_pages = file.Pages.Where(page => !page.Usable).Select(page => page.PageNumber).OrderBy(number => number).ToArray()
     };
 
     private static object RequirementDto(RequirementEntity requirement, IReadOnlyDictionary<Guid, StoredFileEntity> files)
@@ -519,10 +723,18 @@ public static class Endpoints
         return new
         {
             requirement_id = requirement.Id,
+            kind = requirement.Kind,
+            category = requirement.Category,
+            severity = requirement.QuoteVerified ? requirement.Severity : "uncertain",
+            explanation = requirement.Explanation,
+            possible_impact = requirement.PossibleImpact,
+            next_step = requirement.NextStep,
             statement = requirement.Statement,
             edited_statement = requirement.EditedStatement,
             requirement_class = requirement.RequirementClass,
             mandatory_label = requirement.MandatoryLabel,
+            due_date_text = requirement.DueDateText,
+            evidence_type = requirement.EvidenceType,
             source_file_id = requirement.SourceFileId,
             source_file_name = source?.OriginalName,
             page_number = requirement.PageNumber,
@@ -583,10 +795,10 @@ public static class Endpoints
         return warnings;
     }
 
-    private static IResult Missing() =>
+    internal static IResult Missing() =>
         Error("analysis_not_found", "That analysis does not exist, or it was deleted.", false, 404);
 
-    private static IResult Error(string code, string message, bool retryable, int status) =>
+    internal static IResult Error(string code, string message, bool retryable, int status) =>
         Results.Json(new
         {
             code,

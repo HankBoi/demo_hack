@@ -1,16 +1,19 @@
 namespace TenderEvidenceChecker.Api.Services;
 
 /// <summary>
-/// Rule-based extractor used when no API key is configured.
-/// Quotes are copied from page text so citation checks can pass or fail honestly.
+/// Rule-based extractor for automated tests only. It is never registered by the application host,
+/// so the live app cannot show its output. Quotes are copied from page text so citation checks
+/// can pass or fail honestly.
 /// </summary>
 public sealed class DemoModelProvider : IModelProvider
 {
     public string ProviderId => "demo-extractor";
     public string ModelId => "demo-rules-2026-10-09";
+    public bool IsConfigured => true;
 
     public Task<ModelRequirementDocument> ExtractRequirementsAsync(
         IReadOnlyList<SourcePage> pages,
+        string language,
         CancellationToken cancellationToken)
     {
         var rows = new List<ModelRequirement>();
@@ -50,6 +53,7 @@ public sealed class DemoModelProvider : IModelProvider
     public Task<ModelEvidenceDocument> MatchEvidenceAsync(
         IReadOnlyList<RequirementPrompt> requirements,
         IReadOnlyList<SourcePage> evidencePages,
+        string language,
         CancellationToken cancellationToken)
     {
         var links = new List<ModelEvidenceLink>();
@@ -211,8 +215,20 @@ public sealed class DemoModelProvider : IModelProvider
             evidenceType = "contract";
         }
 
+        var category = requirementClass == "uncertain"
+            ? "conflicting_unclear"
+            : folded.Contains("cərimə", StringComparison.Ordinal) || folded.Contains("təminat", StringComparison.Ordinal)
+                ? "contract_terms"
+                : evidenceType is not null ? "required_document" : "other";
+
         return new ModelRequirement
         {
+            Kind = "requirement",
+            Category = category,
+            Severity = "uncertain",
+            Explanation = reason,
+            PossibleImpact = "A person needs to decide whether this affects the bid.",
+            NextStep = "Review the quoted page.",
             Statement = paragraph,
             RequirementClass = requirementClass,
             MandatoryLabel = label,

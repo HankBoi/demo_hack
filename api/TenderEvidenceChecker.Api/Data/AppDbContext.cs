@@ -10,16 +10,37 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<RequirementEntity> Requirements => Set<RequirementEntity>();
     public DbSet<EvidenceMatchEntity> Matches => Set<EvidenceMatchEntity>();
     public DbSet<JobEntity> Jobs => Set<JobEntity>();
+    public DbSet<WorkspaceEntity> Workspaces => Set<WorkspaceEntity>();
+    public DbSet<LibraryDocumentEntity> LibraryDocuments => Set<LibraryDocumentEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<WorkspaceEntity>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).ValueGeneratedNever();
+            entity.Property(x => x.Name).HasMaxLength(120);
+        });
+
+        modelBuilder.Entity<LibraryDocumentEntity>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).ValueGeneratedNever();
+            entity.Property(x => x.OriginalName).HasMaxLength(180);
+            entity.Property(x => x.StoredName).HasMaxLength(80);
+            entity.Property(x => x.Sha256).HasMaxLength(64);
+            entity.HasIndex(x => x.WorkspaceId);
+        });
+
         modelBuilder.Entity<AnalysisEntity>(entity =>
         {
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Id).ValueGeneratedNever();
             entity.Property(x => x.Label).HasMaxLength(200);
             entity.Property(x => x.Status).HasMaxLength(64);
+            entity.Property(x => x.Language).HasMaxLength(8);
             entity.HasIndex(x => x.CreatedAt);
+            entity.HasIndex(x => x.WorkspaceId);
         });
 
         modelBuilder.Entity<StoredFileEntity>(entity =>

@@ -10,9 +10,10 @@ using TenderEvidenceChecker.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 var workerMode = args.Contains("--worker");
+var repoRoot = FindRepoRoot(builder.Environment.ContentRootPath);
+LoadDotEnv(Path.Combine(repoRoot, ".env"));
 MapEnvironment(builder.Configuration);
 
-var repoRoot = FindRepoRoot(builder.Environment.ContentRootPath);
 if (string.IsNullOrWhiteSpace(builder.Configuration["App:DatabaseUrl"]))
 {
     builder.Configuration["App:DatabaseUrl"] = $"Data Source={Path.Combine(repoRoot, "data", "tender.db")}";
@@ -52,10 +53,19 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
 
+// Local origins only. WEB_PORT lets a second local checkout run beside the default one.
+var webPort = Environment.GetEnvironmentVariable("WEB_PORT");
+var allowedOrigins = new List<string> { "http://127.0.0.1:43123", "http://localhost:43123" };
+if (int.TryParse(webPort, out var extraPort) && extraPort is > 1023 and < 65536)
+{
+    allowedOrigins.Add($"http://127.0.0.1:{extraPort}");
+    allowedOrigins.Add($"http://localhost:{extraPort}");
+}
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy => policy
-        .WithOrigins("http://127.0.0.1:43123", "http://localhost:43123")
+        .WithOrigins(allowedOrigins.ToArray())
         .AllowAnyHeader()
         .AllowAnyMethod());
 });
@@ -63,15 +73,19 @@ builder.Services.AddCors(options =>
 builder.Services.AddSingleton<PdfTextService>();
 builder.Services.AddSingleton<FileStore>();
 builder.Services.AddScoped<DocumentUpload>();
-builder.Services.AddSingleton<DemoModelProvider>();
-builder.Services.AddHttpClient<AnthropicModelProvider>(client =>
+builder.Services.AddScoped<QuotaService>();
+builder.Services.AddHttpClient<GeminiModelProvider>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(Math.Max(5, appOptions.ModelTimeoutSeconds));
 });
+builder.Services.AddSingleton<UnconfiguredModelProvider>();
+
+// The live host only ever uses Gemini. Without a key it uses a provider that fails with a setup message.
+// The rule-based DemoModelProvider is registered by automated tests only.
 builder.Services.AddSingleton<IModelProvider>(services =>
-    string.IsNullOrWhiteSpace(appOptions.AnthropicApiKey)
-        ? services.GetRequiredService<DemoModelProvider>()
-        : services.GetRequiredService<AnthropicModelProvider>());
+    string.IsNullOrWhiteSpace(appOptions.GeminiApiKey)
+        ? services.GetRequiredService<UnconfiguredModelProvider>()
+        : services.GetRequiredService<GeminiModelProvider>());
 builder.Services.AddSingleton<AnalysisProcessor>();
 if (workerMode)
 {
@@ -105,6 +119,9 @@ using (var scope = app.Services.CreateScope())
     using var wal = connection.CreateCommand();
     wal.CommandText = "PRAGMA journal_mode=WAL;";
     wal.ExecuteScalar();
+
+    SchemaPatcher.Apply(db);
+    SchemaPatcher.SeedWorkspace(db);
 }
 
 app.UseExceptionHandler(handler =>
@@ -139,8 +156,10 @@ static void MapEnvironment(ConfigurationManager configuration)
         }
     }
 
-    Set("ANTHROPIC_API_KEY", "App:AnthropicApiKey");
-    Set("CLAUDE_MODEL_ID", "App:ClaudeModelId");
+    Set("GEMINI_API_KEY", "App:GeminiApiKey");
+    Set("GEMINI_MODEL_ID", "App:GeminiModelId");
+    Set("PAYMENTS_MODE", "App:PaymentsMode");
+    Set("DEMO_MONTHLY_PRICE_AZN", "App:DemoMonthlyPriceAzn");
     Set("DATABASE_URL", "App:DatabaseUrl");
     Set("PRIVATE_UPLOAD_DIR", "App:PrivateUploadDir");
     Set("MAX_UPLOAD_MB", "App:MaxUploadMb");
@@ -148,6 +167,38 @@ static void MapEnvironment(ConfigurationManager configuration)
     Set("OCR_ENABLED", "App:OcrEnabled");
     Set("RETENTION_HOURS", "App:RetentionHours");
     Set("REFERENCE_DATE", "App:ReferenceDate");
+}
+
+// Reads KEY=VALUE lines from the uncommitted repo-level .env file. Real environment variables win.
+// Values are never logged. Automated tests skip this so a developer's key cannot leak into a test run.
+static void LoadDotEnv(string path)
+{
+    if (Environment.GetEnvironmentVariable("TEC_SKIP_DOTENV") == "1" || !File.Exists(path))
+    {
+        return;
+    }
+
+    foreach (var raw in File.ReadAllLines(path))
+    {
+        var line = raw.Trim();
+        if (line.Length == 0 || line.StartsWith('#'))
+        {
+            continue;
+        }
+
+        var separator = line.IndexOf('=');
+        if (separator <= 0)
+        {
+            continue;
+        }
+
+        var key = line[..separator].Trim();
+        var value = line[(separator + 1)..].Trim().Trim('"', '\'');
+        if (value.Length > 0 && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(key)))
+        {
+            Environment.SetEnvironmentVariable(key, value);
+        }
+    }
 }
 
 static string FindRepoRoot(string contentRoot)

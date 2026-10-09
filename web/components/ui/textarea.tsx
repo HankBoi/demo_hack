@@ -5,7 +5,7 @@ export function Textarea({ className, ...props }: React.ComponentProps<"textarea
   return (
     <textarea
       className={cn(
-        "min-h-20 w-full rounded-md border border-border bg-card px-3 py-2 text-sm outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        "flex min-h-20 w-full rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm leading-6 text-foreground outline-none placeholder:text-muted focus-visible:border-mint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mint",
         className,
       )}
       {...props}

@@ -68,6 +68,18 @@ public sealed class AnalysisProcessor(
             job.FinishedAt = DateTime.UtcNow;
             analysis.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
+
+            if (job.Status == "succeeded")
+            {
+                var waiting = await db.Jobs.AnyAsync(
+                    item => item.AnalysisId == analysis.Id && item.Status == "queued" && item.Id != job.Id,
+                    cancellationToken);
+                if (!waiting)
+                {
+                    var quota = scope.ServiceProvider.GetRequiredService<QuotaService>();
+                    await quota.TryCountAsync(db, analysis, cancellationToken);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -167,7 +179,7 @@ public sealed class AnalysisProcessor(
             }))
             .ToList();
 
-        var extractedRequirements = await provider.ExtractRequirementsAsync(pages, cancellationToken);
+        var extractedRequirements = await provider.ExtractRequirementsAsync(pages, analysis.Language, cancellationToken);
         if (await IsCancelled(db, analysis.Id, cancellationToken))
         {
             analysis.Status = "cancelled";
@@ -178,11 +190,13 @@ public sealed class AnalysisProcessor(
         db.Requirements.RemoveRange(untouched);
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var savedCount = 0;
         foreach (var candidate in extractedRequirements.Requirements)
         {
             var saved = ValidateRequirement(candidate, analysis, seen);
             if (saved is not null)
             {
+                savedCount++;
                 saved.AnalysisId = analysis.Id;
                 db.Requirements.Add(saved);
                 db.Entry(saved).State = EntityState.Added;
@@ -192,10 +206,30 @@ public sealed class AnalysisProcessor(
         analysis.ProviderId = provider.ProviderId;
         analysis.ModelId = provider.ModelId;
         analysis.PromptVersion = options.PromptVersion;
-        analysis.Status = "needs_review";
-        analysis.ProgressStage = "needs_review";
         analysis.ErrorCode = null;
         analysis.ErrorMessage = null;
+
+        // Company documents attached when the analysis was started are matched in the same run.
+        var hasEvidence = analysis.Files.Any(file => file.Role == "evidence");
+        if (hasEvidence && savedCount > 0)
+        {
+            var matchJob = new JobEntity
+            {
+                Id = Guid.NewGuid(),
+                AnalysisId = analysis.Id,
+                Kind = "match",
+                Status = "queued",
+                CreatedAt = DateTime.UtcNow
+            };
+            db.Jobs.Add(matchJob);
+            db.Entry(matchJob).State = EntityState.Added;
+            analysis.Status = "queued";
+            analysis.ProgressStage = "matching_evidence";
+            return;
+        }
+
+        analysis.Status = "needs_review";
+        analysis.ProgressStage = "needs_review";
     }
 
     private async Task Match(IServiceProvider services, AppDbContext db, AnalysisEntity analysis, CancellationToken cancellationToken)
@@ -216,7 +250,11 @@ public sealed class AnalysisProcessor(
                 Usable = page.Usable
             }))
             .ToList();
-        var prompts = analysis.Requirements.Select(requirement => new RequirementPrompt
+        // Only verified tender requirements are matched. Risk findings and rows whose source could not be verified are not.
+        var matchable = analysis.Requirements
+            .Where(requirement => requirement.Kind == "requirement" && requirement.QuoteVerified)
+            .ToList();
+        var prompts = matchable.Select(requirement => new RequirementPrompt
         {
             RequirementId = requirement.Id,
             Statement = requirement.EditedStatement ?? requirement.Statement,
@@ -224,17 +262,20 @@ public sealed class AnalysisProcessor(
             Quote = requirement.Quote ?? ""
         }).ToList();
 
-        var matched = prompts.Count == 0
+        // With no readable uploaded page there is nothing to compare, so the model is not called.
+        var matched = prompts.Count == 0 || !evidencePages.Any(page => page.Usable)
             ? new ModelEvidenceDocument()
-            : await provider.MatchEvidenceAsync(prompts, evidencePages, cancellationToken);
+            : await provider.MatchEvidenceAsync(prompts, evidencePages, analysis.Language, cancellationToken);
         if (await IsCancelled(db, analysis.Id, cancellationToken))
         {
             analysis.Status = "cancelled";
             return;
         }
 
-        var pageIndex = evidencePages.ToDictionary(page => (page.FileId, page.PageNumber));
-        foreach (var requirement in analysis.Requirements.Where(requirement => requirement.ReviewerDecision is null))
+        var pageIndex = evidencePages
+            .GroupBy(page => (page.FileId, page.PageNumber))
+            .ToDictionary(group => group.Key, group => group.First());
+        foreach (var requirement in matchable.Where(requirement => requirement.ReviewerDecision is null))
         {
             db.Matches.RemoveRange(requirement.Matches);
             requirement.Matches.Clear();
@@ -275,6 +316,9 @@ public sealed class AnalysisProcessor(
 
     private static RequirementEntity? ValidateRequirement(ModelRequirement candidate, AnalysisEntity analysis, HashSet<string> seen)
     {
+        var kind = FindingVocabulary.Kinds.Contains(candidate.Kind) ? candidate.Kind.ToLowerInvariant() : "requirement";
+        var category = FindingVocabulary.Categories.Contains(candidate.Category) ? candidate.Category.ToLowerInvariant() : "other";
+        var severity = FindingVocabulary.Severities.Contains(candidate.Severity) ? candidate.Severity.ToLowerInvariant() : "uncertain";
         var requirementClass = CitationValidator.RequirementClasses.Contains(candidate.RequirementClass)
             ? candidate.RequirementClass.ToLowerInvariant()
             : "uncertain";
@@ -303,11 +347,18 @@ public sealed class AnalysisProcessor(
             reason = "The source page or exact quote could not be verified, so this row is not shown as a supported fact.";
             requirementClass = "uncertain";
             label = "unclear";
+            severity = "uncertain";
         }
 
         return new RequirementEntity
         {
             Id = Guid.NewGuid(),
+            Kind = kind,
+            Category = category,
+            Severity = severity,
+            Explanation = Clip(candidate.Explanation, 1500),
+            PossibleImpact = Clip(candidate.PossibleImpact, 1000),
+            NextStep = Clip(candidate.NextStep, 1000),
             Statement = statement,
             RequirementClass = requirementClass,
             MandatoryLabel = label,
@@ -324,12 +375,18 @@ public sealed class AnalysisProcessor(
         };
     }
 
+    private static string Clip(string? value, int max)
+    {
+        var text = (value ?? "").Trim();
+        return text.Length <= max ? text : text[..max].TrimEnd() + "…";
+    }
+
     private static EvidenceMatchEntity ValidateMatch(
         ModelEvidenceLink link,
         Dictionary<(Guid FileId, int PageNumber), SourcePage> pages)
     {
         var status = link.Status?.ToLowerInvariant() ?? "unclear";
-        if (status is not ("possible_match" or "not_found" or "unclear"))
+        if (status is not ("possible_match" or "possible_mismatch" or "not_found" or "unclear"))
         {
             status = "unclear";
         }
@@ -411,7 +468,7 @@ public sealed class AnalysisProcessor(
 
     private async Task ReclaimStale(AppDbContext db, CancellationToken cancellationToken)
     {
-        var cutoff = DateTime.UtcNow.AddSeconds(-(appOptions.Value.ModelTimeoutSeconds + 30));
+        var cutoff = DateTime.UtcNow.AddSeconds(-Math.Max(60, appOptions.Value.JobStaleSeconds));
         var stale = await db.Jobs
             .Include(job => job.Analysis)
             .Where(job => job.Status == "processing" && job.StartedAt != null && job.StartedAt < cutoff)
@@ -440,7 +497,12 @@ public sealed class AnalysisProcessor(
 
     private async Task DeleteExpired(AppDbContext db, CancellationToken cancellationToken)
     {
-        var cutoff = DateTime.UtcNow.AddHours(-Math.Max(1, appOptions.Value.RetentionHours));
+        if (appOptions.Value.RetentionHours <= 0)
+        {
+            return;
+        }
+
+        var cutoff = DateTime.UtcNow.AddHours(-appOptions.Value.RetentionHours);
         var old = await db.Analyses.Where(item => item.CreatedAt < cutoff).Select(item => item.Id).ToListAsync(cancellationToken);
         if (old.Count == 0)
         {

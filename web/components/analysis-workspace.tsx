@@ -1,40 +1,64 @@
 "use client";
 
-import { SiteHeader } from "@/components/site-header";
+import { FilePicker } from "@/components/file-picker";
+import { FindingCard } from "@/components/finding-card";
 import { StatusMark } from "@/components/status-mark";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  ApiError,
   addEvidence,
+  analysisFileUrl,
   cancelAnalysis,
   deleteAnalysis,
-  downloadChecklist,
-  filesFromDemo,
+  fetchDocumentFile,
   getAnalysis,
   getPages,
   getRequirements,
+  listDocuments,
   matchEvidence,
   patchRequirement,
   retryAnalysis,
-  DEMO_EVIDENCE,
   type Analysis,
+  type LibraryDocument,
   type PagePreview,
   type Requirement,
 } from "@/lib/api";
+import { useErrorText } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+import {
+  ArrowLeft,
+  Download,
+  ExternalLink,
+  FlaskConical,
+  Loader2,
+  ShieldAlert,
+  Trash2,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 const active = new Set(["queued", "processing"]);
+const CATEGORIES = [
+  "required_document",
+  "deadline",
+  "technical_mismatch",
+  "contract_terms",
+  "conflicting_unclear",
+  "other",
+];
+const SEVERITIES = ["high", "medium", "low", "uncertain"];
+
+const selectClass =
+  "min-h-10 w-full rounded-xl border border-white/15 bg-[#0a2218] px-3 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-mint";
 
 export function AnalysisWorkspace({ id }: { id: string }) {
-  const { t } = useI18n();
+  const { t, has } = useI18n();
+  const errorText = useErrorText();
   const router = useRouter();
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
@@ -44,6 +68,10 @@ export function AnalysisWorkspace({ id }: { id: string }) {
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [tick, setTick] = useState(0);
+  const [category, setCategory] = useState("all");
+  const [severity, setSeverity] = useState("all");
+  const [onlyUnverified, setOnlyUnverified] = useState(false);
+  const [onlyOpen, setOnlyOpen] = useState(false);
 
   const refresh = useCallback(() => setTick((value) => value + 1), []);
 
@@ -65,7 +93,7 @@ export function AnalysisWorkspace({ id }: { id: string }) {
           timer = window.setTimeout(load, 1500);
         }
       } catch (caught) {
-        if (!stop) setError(messageFor(caught, t));
+        if (!stop) setError(errorText(caught));
       }
     }
 
@@ -74,7 +102,7 @@ export function AnalysisWorkspace({ id }: { id: string }) {
       stop = true;
       window.clearTimeout(timer);
     };
-  }, [id, tick, t]);
+  }, [id, tick, errorText]);
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -84,373 +112,420 @@ export function AnalysisWorkspace({ id }: { id: string }) {
       await action();
       refresh();
     } catch (caught) {
-      setError(messageFor(caught, t));
+      setError(errorText(caught));
     } finally {
       setBusy(false);
     }
   }
 
-  return (
-    <>
-      <SiteHeader />
-      <main className="mx-auto grid w-full max-w-6xl gap-6 px-4 py-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <Link href="/" className="text-sm text-accent underline-offset-4 hover:underline">
-              {t("back")}
-            </Link>
-            <h1 className="mt-1 truncate text-2xl font-semibold">
-              {analysis?.label ?? t("loading")}
-            </h1>
-          </div>
-          {analysis ? (
-            <div className="flex flex-wrap items-center gap-2" role="status" aria-live="polite">
-              <StatusMark status={analysis.status} label={labelFor(t, "status", analysis.status)} />
-              <span className="text-sm text-muted">
-                {t("progressLabel")}: {labelFor(t, "progress", analysis.progress_stage)}
-              </span>
-            </div>
-          ) : null}
-        </div>
-
-        {error ? (
-          <Alert className="border-danger/40" role="alert">
-            {error}
-          </Alert>
-        ) : null}
-        {notice ? <Alert role="status">{notice}</Alert> : null}
-        {!analysis && !error ? <Alert role="status">{t("loading")}</Alert> : null}
-        {analysis ? (
-          <>
-            <WarningList analysis={analysis} />
-            <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-              <section className="grid gap-4" aria-labelledby="requirements-heading">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 id="requirements-heading" className="text-lg font-semibold">
-                    {t("requirements")}
-                  </h2>
-                  <div className="flex flex-wrap gap-2">
-                    {active.has(analysis.status) ? (
-                      <Button type="button" variant="outline" disabled={busy} onClick={() => void run(() => cancelAnalysis(id).then(() => undefined))}>
-                        {t("cancel")}
-                      </Button>
-                    ) : null}
-                    {analysis.status === "failed" ? (
-                      <Button type="button" disabled={busy} onClick={() => void run(() => retryAnalysis(id).then(() => undefined))}>
-                        {t("retry")}
-                      </Button>
-                    ) : null}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={busy || requirements.length === 0 || active.has(analysis.status)}
-                      onClick={() =>
-                        void run(async () => {
-                          await downloadChecklist(id);
-                        })
-                      }
-                    >
-                      {t("export")}
-                    </Button>
-                  </div>
-                </div>
-                {analysis.error ? (
-                  <Alert className="border-danger/40" role="alert">
-                    {messageFor(new ApiError(analysis.error.code, analysis.error.user_message, analysis.error.retryable, 0), t)}
-                  </Alert>
-                ) : null}
-                {requirements.length === 0 && !active.has(analysis.status) && analysis.status !== "failed" ? (
-                  <Alert>{t("noRequirements")}</Alert>
-                ) : null}
-                {requirements.map((requirement) => (
-                  <RequirementCard
-                    key={requirement.requirement_id}
-                    requirement={requirement}
-                    disabled={busy}
-                    onSave={async (decision, statement, note) => {
-                      const saved = await patchRequirement(requirement.requirement_id, decision, statement, note);
-                      setRequirements((current) =>
-                        current.map((item) => (item.requirement_id === saved.requirement_id ? saved : item)),
-                      );
-                      setNotice(t("saved"));
-                      refresh();
-                    }}
-                  />
-                ))}
-              </section>
-              <aside className="grid gap-4">
-                <EvidencePanel
-                  analysis={analysis}
-                  busy={busy}
-                  onUpload={(files) =>
-                    run(async () => {
-                      await addEvidence(id, files);
-                    })
-                  }
-                  onDemo={() =>
-                    run(async () => {
-                      const files = await filesFromDemo(DEMO_EVIDENCE.map((name) => `/demo/${name}`));
-                      await addEvidence(id, files);
-                    })
-                  }
-                  onMatch={() =>
-                    run(async () => {
-                      await matchEvidence(id);
-                    })
-                  }
-                />
-                <FileList analysis={analysis} />
-                <PageList pages={pages} />
-                <Card className="p-4">
-                  {confirmingDelete ? (
-                    <div className="grid gap-3">
-                      <p className="text-sm">{t("confirmDelete")}</p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          variant="danger"
-                          disabled={busy}
-                          onClick={() =>
-                            void run(async () => {
-                              await deleteAnalysis(id);
-                              router.push("/");
-                            })
-                          }
-                        >
-                          {t("delete")}
-                        </Button>
-                        <Button type="button" variant="outline" onClick={() => setConfirmingDelete(false)}>
-                          {t("keep")}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <Button type="button" variant="danger" onClick={() => setConfirmingDelete(true)}>
-                      {t("delete")}
-                    </Button>
-                  )}
-                </Card>
-              </aside>
-            </div>
-          </>
-        ) : null}
-      </main>
-    </>
+  const visible = useMemo(
+    () =>
+      requirements.filter((item) => {
+        if (category !== "all" && item.category !== category) return false;
+        if (severity !== "all" && (item.quote_verified ? item.severity : "uncertain") !== severity) return false;
+        if (onlyUnverified && item.quote_verified) return false;
+        if (onlyOpen && item.reviewer_decision) return false;
+        return true;
+      }),
+    [requirements, category, severity, onlyUnverified, onlyOpen],
   );
-}
 
-function WarningList({ analysis }: { analysis: Analysis }) {
-  const { t } = useI18n();
-  const warnings = analysis.warnings ?? [];
-  const demo = warnings.includes("demo_extractor") || analysis.provider_id === "demo-extractor";
-  const live = analysis.provider_id && analysis.provider_id !== "demo-extractor";
-  const unreadable = warnings.some((item) => item.startsWith("unreadable:"));
-  const duplicate = warnings.some((item) => item.startsWith("duplicate:"));
-  if (!demo && !live && !unreadable && !duplicate && !analysis.stale && !active.has(analysis.status)) {
-    return null;
-  }
+  const working = analysis ? active.has(analysis.status) : false;
+  const hasEvidence = analysis?.files.some((file) => file.role === "evidence") ?? false;
+  const filtersOn = category !== "all" || severity !== "all" || onlyUnverified || onlyOpen;
+
   return (
-    <div className="grid gap-2">
-      {analysis.status === "queued" && analysis.stale ? <Alert>{t("waitingWorker")}</Alert> : null}
-      {analysis.stale ? <Alert>{t("stale")}</Alert> : null}
-      {demo ? <Alert>{t("demoExtractor")}</Alert> : null}
-      {live ? (
-        <Alert>
-          {t("liveModel")}
-          {analysis.model_id ? `: ${analysis.model_id}` : ""}
+    <div className="grid gap-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <Link href="/analyses" className="inline-flex items-center gap-1.5 text-sm text-mint underline-offset-4 hover:underline">
+            <ArrowLeft aria-hidden="true" className="size-4" />
+            {t("results.back")}
+          </Link>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight break-words sm:text-3xl">
+            {analysis?.label ?? t("loading")}
+          </h1>
+        </div>
+        {analysis ? (
+          <div className="flex flex-wrap items-center gap-2" role="status" aria-live="polite">
+            {analysis.is_sample ? (
+              <Badge tone="uncertain">
+                <FlaskConical aria-hidden="true" className="size-3.5" />
+                {t("sample.badge")}
+              </Badge>
+            ) : null}
+            <StatusMark status={analysis.status} label={t(`status.${analysis.status}`)} />
+            <span className="text-sm text-muted">
+              {t("progressLabel")}: {has(`progress.${analysis.progress_stage}`) ? t(`progress.${analysis.progress_stage}`) : analysis.progress_stage}
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      {error ? (
+        <Alert tone="danger" role="alert">
+          {error}
         </Alert>
       ) : null}
-      {unreadable ? <Alert>{t("unreadable")}</Alert> : null}
-      {duplicate ? <Alert>{t("duplicate")}</Alert> : null}
+      {notice ? <Alert tone="success">{notice}</Alert> : null}
+      {!analysis && !error ? (
+        <Alert className="flex items-center gap-2">
+          <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+          {t("loading")}
+        </Alert>
+      ) : null}
+
+      {analysis ? (
+        <>
+          <Notices analysis={analysis} working={working} />
+
+          <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_21rem]">
+            <section className="grid gap-4" aria-labelledby="findings-heading">
+              <SummaryPanel analysis={analysis} />
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 id="findings-heading" className="text-xl font-semibold">
+                  {t("results.findings")}
+                  <span className="ml-2 text-sm font-normal text-muted">
+                    {filtersOn ? `${visible.length}/${requirements.length}` : requirements.length}
+                  </span>
+                </h2>
+                <div className="flex flex-wrap gap-2">
+                  {working ? (
+                    <Button type="button" variant="outline" disabled={busy} onClick={() => void run(() => cancelAnalysis(id).then(() => undefined))}>
+                      {t("cancel")}
+                    </Button>
+                  ) : null}
+                  {analysis.status === "failed" ? (
+                    <Button type="button" disabled={busy} onClick={() => void run(() => retryAnalysis(id).then(() => undefined))}>
+                      {t("retry")}
+                    </Button>
+                  ) : null}
+                  {requirements.length > 0 && !working ? (
+                    <Link href={`/analyses/${id}/export`} className={cn(buttonVariants({ variant: "outline" }))}>
+                      <Download aria-hidden="true" className="size-4" />
+                      {t("export")}
+                    </Link>
+                  ) : null}
+                </div>
+              </div>
+
+              {requirements.length > 0 ? (
+                <Card className="grid gap-3 p-4 sm:grid-cols-2" aria-label={t("filters.title")}>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="filter-category">{t("filters.category")}</Label>
+                    <select id="filter-category" className={selectClass} value={category} onChange={(event) => setCategory(event.target.value)}>
+                      <option value="all">{t("filters.all")}</option>
+                      {CATEGORIES.map((value) => (
+                        <option key={value} value={value}>
+                          {t(`category.${value}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="filter-severity">{t("filters.severity")}</Label>
+                    <select id="filter-severity" className={selectClass} value={severity} onChange={(event) => setSeverity(event.target.value)}>
+                      <option value="all">{t("filters.all")}</option>
+                      {SEVERITIES.map((value) => (
+                        <option key={value} value={value}>
+                          {t(`severity.${value}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <label className="flex min-h-10 items-center gap-2 text-sm">
+                    <input type="checkbox" className="size-4 accent-emerald-400" checked={onlyUnverified} onChange={(event) => setOnlyUnverified(event.target.checked)} />
+                    {t("filters.unverified")}
+                  </label>
+                  <label className="flex min-h-10 items-center gap-2 text-sm">
+                    <input type="checkbox" className="size-4 accent-emerald-400" checked={onlyOpen} onChange={(event) => setOnlyOpen(event.target.checked)} />
+                    {t("filters.open")}
+                  </label>
+                </Card>
+              ) : null}
+
+              {analysis.error ? (
+                <Alert tone="danger" role="alert">
+                  {has(`errors.${analysis.error.code}`) ? t(`errors.${analysis.error.code}`) : t("errors.generic")}
+                </Alert>
+              ) : null}
+              {requirements.length === 0 && !working && analysis.status !== "failed" ? (
+                <Alert tone="warn">{t("noRequirements")}</Alert>
+              ) : null}
+              {requirements.length > 0 && visible.length === 0 ? <Alert>{t("filters.none")}</Alert> : null}
+
+              <ul className="grid gap-4">
+                {visible.map((requirement) => (
+                  <li key={requirement.requirement_id}>
+                    <FindingCard
+                      requirement={requirement}
+                      disabled={busy}
+                      onSave={async (decision, statement, note) => {
+                        const saved = await patchRequirement(requirement.requirement_id, decision, statement, note);
+                        setRequirements((current) =>
+                          current.map((item) => (item.requirement_id === saved.requirement_id ? saved : item)),
+                        );
+                        setNotice(t("saved"));
+                        refresh();
+                      }}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <aside className="grid gap-4">
+              <EvidencePanel
+                busy={busy}
+                blocked={working || analysis.status === "failed" || analysis.status === "cancelled"}
+                canMatch={analysis.counts.requirements > 0 && hasEvidence}
+                onUpload={(files) =>
+                  run(async () => {
+                    await addEvidence(id, files);
+                    setNotice(t("results.evidenceAdded"));
+                  })
+                }
+                onLibrary={(documents) =>
+                  run(async () => {
+                    const files = await Promise.all(documents.map((document) => fetchDocumentFile(document)));
+                    await addEvidence(id, files);
+                    setNotice(t("results.evidenceAdded"));
+                  })
+                }
+                onMatch={() =>
+                  run(async () => {
+                    await matchEvidence(id);
+                  })
+                }
+              />
+              <FileList analysis={analysis} />
+              <PageList pages={pages} />
+              <Card className="p-4">
+                {confirmingDelete ? (
+                  <div className="grid gap-3">
+                    <p className="text-sm leading-6">{t("confirmDelete")}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="danger"
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () => {
+                            await deleteAnalysis(id);
+                            router.push("/analyses");
+                          })
+                        }
+                      >
+                        {t("delete")}
+                      </Button>
+                      <Button type="button" variant="outline" onClick={() => setConfirmingDelete(false)}>
+                        {t("keep")}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button type="button" variant="danger" onClick={() => setConfirmingDelete(true)}>
+                    <Trash2 aria-hidden="true" className="size-4" />
+                    {t("delete")}
+                  </Button>
+                )}
+              </Card>
+            </aside>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
 
-function RequirementCard({
-  requirement,
-  disabled,
-  onSave,
-}: {
-  requirement: Requirement;
-  disabled: boolean;
-  onSave: (decision: string, statement?: string, note?: string) => Promise<void>;
-}) {
+function Notices({ analysis, working }: { analysis: Analysis; working: boolean }) {
   const { t } = useI18n();
-  const [editing, setEditing] = useState(false);
-  const [statement, setStatement] = useState(requirement.edited_statement || requirement.statement);
-  const [note, setNote] = useState(requirement.human_note ?? "");
-  const [localError, setLocalError] = useState<string | null>(null);
-  const shown = requirement.edited_statement || requirement.statement;
-  const evidence = requirement.evidence?.[0];
-
-  async function save(decision: string) {
-    if (decision === "not_applicable" && note.trim().length === 0) {
-      setLocalError(t("noteRequired"));
-      return;
-    }
-    if (decision === "edit" && statement.trim().length === 0) {
-      setLocalError(t("statementRequired"));
-      return;
-    }
-    setLocalError(null);
-    await onSave(decision, decision === "edit" ? statement.trim() : undefined, note.trim() || undefined);
-    setEditing(false);
-  }
+  const warnings = analysis.warnings ?? [];
+  const unreadable = warnings.filter((item) => item.startsWith("unreadable:"));
+  const duplicate = warnings.some((item) => item.startsWith("duplicate:"));
 
   return (
-    <Card className="p-4" aria-labelledby={`req-${requirement.requirement_id}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusMark status={reviewIcon(requirement.review_status)} label={labelFor(t, "review", requirement.review_status)} />
-        <Badge>{labelFor(t, "class", requirement.requirement_class)}</Badge>
-        <Badge>{labelFor(t, "mandatoryLabel", requirement.mandatory_label)}</Badge>
+    <div className="grid gap-2">
+      <Alert tone="warn" className="flex items-start gap-2">
+        <ShieldAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+        <span>{t("results.aiBanner")}</span>
+      </Alert>
+      {analysis.is_sample ? <Alert>{t("sample.banner")}</Alert> : null}
+      {working ? (
+        <Alert className="flex items-center gap-2" role="status">
+          <Loader2 aria-hidden="true" className="size-4 shrink-0 animate-spin" />
+          {t("results.working")}
+        </Alert>
+      ) : null}
+      {analysis.status === "queued" && analysis.stale ? <Alert tone="warn">{t("waitingWorker")}</Alert> : null}
+      {analysis.stale && analysis.status !== "queued" ? <Alert tone="warn">{t("stale")}</Alert> : null}
+      {analysis.model_id ? (
+        <p className="text-xs text-muted">
+          {t("liveModel")}: {analysis.model_id} · {t("results.language")}: {t(`languageName.${analysis.language}`)}
+        </p>
+      ) : null}
+      {unreadable.length > 0 ? (
+        <Alert tone="warn">
+          <p className="font-medium">{t("unreadable")}</p>
+          <ul className="mt-1 list-disc pl-5 text-amber-50/90">
+            {unreadable.map((item) => {
+              const [, name, page] = item.split(":");
+              return (
+                <li key={item}>
+                  {name}, {t("page")} {page?.replace("p", "")}
+                </li>
+              );
+            })}
+          </ul>
+        </Alert>
+      ) : null}
+      {duplicate ? <Alert tone="warn">{t("duplicate")}</Alert> : null}
+    </div>
+  );
+}
+
+function SummaryPanel({ analysis }: { analysis: Analysis }) {
+  const { t } = useI18n();
+  const summary = analysis.summary;
+  if (!summary || summary.findings_total === 0) return null;
+
+  return (
+    <Card className="grid gap-4 p-5" aria-labelledby="summary-heading">
+      <h2 id="summary-heading" className="text-lg font-semibold">
+        {t("summary.title")}
+      </h2>
+      <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+        <Tile label={t("summary.total")} value={summary.findings_total} />
+        <Tile label={t("summary.verified")} value={summary.source_verified} />
+        <Tile label={t("summary.unverified")} value={summary.source_not_verified} warn={summary.source_not_verified > 0} />
+        <Tile label={t("summary.reviewed")} value={`${summary.reviewed}/${summary.findings_total}`} />
+      </dl>
+      <div className="flex flex-wrap gap-2" aria-label={t("filters.severity")}>
+        {SEVERITIES.map((value) => (
+          <Badge key={value} tone={value as "high" | "medium" | "low" | "uncertain"}>
+            {t(`severity.${value}`)}: {summary.by_severity[value as keyof typeof summary.by_severity]}
+          </Badge>
+        ))}
       </div>
-      <h3 id={`req-${requirement.requirement_id}`} className="mt-3 text-base font-medium leading-6">
-        {shown}
-      </h3>
-      {requirement.edited_statement ? (
-        <p className="mt-2 text-sm text-muted">
-          <span className="font-medium text-foreground">{t("aiSuggestion")}: </span>
-          {requirement.statement}
-        </p>
-      ) : (
-        <p className="mt-2 text-xs text-muted">{t("aiSuggestion")}</p>
-      )}
-      <figure className="mt-4 rounded-md border border-border bg-background p-3">
-        <figcaption className="mb-2 flex flex-wrap justify-between gap-2 text-xs text-muted">
-          <span>{requirement.source_file_name ?? t("sourceQuote")}</span>
-          <span>
-            {t("page")} {requirement.page_number ?? "—"}
-          </span>
-        </figcaption>
-        {requirement.quote_verified && requirement.quote ? (
-          <blockquote className="font-serif text-base leading-7 select-text">
-            <mark className="bg-highlight">{requirement.quote}</mark>
-          </blockquote>
-        ) : (
-          <p className="text-sm text-muted">{requirement.quote ? t("quoteUnverified") : t("noQuote")}</p>
-        )}
-        <p className="mt-2 text-xs text-muted">
-          {requirement.quote_verified ? t("quoteVerified") : t("quoteUnverified")}
-        </p>
-      </figure>
-      {evidence ? (
-        <div className="mt-4 border-l-2 border-accent pl-3 text-sm">
-          <p className="font-medium">{labelFor(t, "evidenceStatus", evidence.status)}</p>
-          {evidence.evidence_file_name ? (
-            <p className="mt-1 text-muted">
-              {evidence.evidence_file_name}
-              {evidence.page_number ? `, ${t("page")} ${evidence.page_number}` : ""}
-            </p>
-          ) : null}
-          {evidence.quote_verified && evidence.quote ? (
-            <p className="mt-2 font-serif leading-6 select-text">{evidence.quote}</p>
-          ) : null}
-          {evidence.explanation ? <p className="mt-2 leading-6 text-muted">{evidence.explanation}</p> : null}
-          {evidence.status === "not_found" ? <p className="mt-1 text-muted">{t("notFoundDetail")}</p> : null}
-          {evidence.date_observation ? <p className="mt-2">{evidence.date_observation}</p> : null}
+      {summary.evidence.possible_match +
+        summary.evidence.possible_mismatch +
+        summary.evidence.not_found_in_uploaded_files +
+        summary.evidence.expiry_date_seen +
+        summary.evidence.unclear >
+      0 ? (
+        <div>
+          <h3 className="mb-2 text-sm font-medium">{t("summary.evidence")}</h3>
+          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <Tile label={t("evidenceStatus.possible_match")} value={summary.evidence.possible_match} />
+            <Tile label={t("evidenceStatus.possible_mismatch")} value={summary.evidence.possible_mismatch} />
+            <Tile label={t("evidenceStatus.not_found")} value={summary.evidence.not_found_in_uploaded_files} />
+            <Tile label={t("evidenceStatus.expired_date_detected")} value={summary.evidence.expiry_date_seen} />
+          </dl>
         </div>
       ) : null}
-      <div className="mt-4 grid gap-2">
-        <Label htmlFor={`note-${requirement.requirement_id}`}>{t("note")}</Label>
-        <Textarea
-          id={`note-${requirement.requirement_id}`}
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-        />
-        {editing ? (
-          <div className="grid gap-2">
-            <Label htmlFor={`edit-${requirement.requirement_id}`}>{t("edit")}</Label>
-            <Textarea
-              id={`edit-${requirement.requirement_id}`}
-              value={statement}
-              onChange={(event) => setStatement(event.target.value)}
-            />
-            <Button type="button" disabled={disabled} onClick={() => void save("edit")}>
-              {t("save")}
-            </Button>
-          </div>
-        ) : null}
-        {localError ? (
-          <p className="text-sm text-danger" role="alert">
-            {localError}
-          </p>
-        ) : null}
-        <div className="flex flex-wrap gap-2" role="group" aria-label={t("humanDecision")}>
-          <Button type="button" size="sm" disabled={disabled} onClick={() => void save("confirm")}>
-            {t("confirm")}
-          </Button>
-          <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => setEditing(true)}>
-            {t("edit")}
-          </Button>
-          <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void save("reject")}>
-            {t("reject")}
-          </Button>
-          <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void save("uncertain")}>
-            {t("uncertain")}
-          </Button>
-          <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void save("missing")}>
-            {t("missing")}
-          </Button>
-          <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void save("not_applicable")}>
-            {t("notApplicable")}
-          </Button>
-        </div>
-      </div>
+      <p className="text-xs leading-5 text-muted">{t("summary.note")}</p>
     </Card>
   );
 }
 
+function Tile({ label, value, warn = false }: { label: string; value: string | number; warn?: boolean }) {
+  return (
+    <div className={cn("rounded-xl border bg-black/20 px-3 py-2", warn ? "border-amber-300/50" : "border-white/10")}>
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="mt-0.5 text-lg font-semibold">{value}</dd>
+    </div>
+  );
+}
+
 function EvidencePanel({
-  analysis,
   busy,
+  blocked,
+  canMatch,
   onUpload,
-  onDemo,
+  onLibrary,
   onMatch,
 }: {
-  analysis: Analysis;
   busy: boolean;
+  blocked: boolean;
+  canMatch: boolean;
   onUpload: (files: File[]) => void;
-  onDemo: () => void;
+  onLibrary: (documents: LibraryDocument[]) => void;
   onMatch: () => void;
 }) {
   const { t } = useI18n();
-  const blocked = active.has(analysis.status) || analysis.status === "failed" || analysis.status === "cancelled";
+  const [library, setLibrary] = useState<LibraryDocument[]>([]);
+  const [picked, setPicked] = useState<string[]>([]);
+
+  useEffect(() => {
+    let stop = false;
+    listDocuments()
+      .then((body) => {
+        if (!stop) setLibrary(body.documents);
+      })
+      .catch(() => undefined);
+    return () => {
+      stop = true;
+    };
+  }, []);
+
   return (
-    <Card className="p-4">
-      <h2 className="font-semibold">{t("evidenceTitle")}</h2>
-      <p className="mt-1 text-sm leading-6 text-muted">{t("evidenceHint")}</p>
-      <div className="mt-3 grid gap-3">
-        <Label htmlFor="evidence-files">{t("addFiles")}</Label>
-        <input
-          id="evidence-files"
-          name="files"
-          type="file"
-          accept="application/pdf,.pdf"
-          multiple
-          className="sr-only"
-          onChange={(event) => {
-            const chosen = Array.from(event.target.files ?? []);
-            event.target.value = "";
-            if (chosen.length > 0) onUpload(chosen);
-          }}
-        />
-        <Button
-          type="button"
-          variant="outline"
-          disabled={busy || blocked}
-          onClick={() => document.getElementById("evidence-files")?.click()}
-        >
-          {t("addFiles")}
-        </Button>
+    <Card className="grid gap-3 p-4" aria-labelledby="evidence-heading">
+      <div>
+        <h2 id="evidence-heading" className="font-semibold">
+          {t("evidenceTitle")}
+        </h2>
+        <p className="mt-1 text-sm leading-6 text-muted">{t("evidenceHint")}</p>
       </div>
-      <div className="mt-3 flex flex-col gap-2">
-        <Button type="button" variant="outline" disabled={busy || blocked} onClick={onDemo}>
-          {t("addDemoEvidence")}
-        </Button>
-        <Button type="button" disabled={busy || blocked || analysis.counts.requirements === 0} onClick={onMatch}>
-          {t("match")}
-        </Button>
-      </div>
+      <FilePicker label={t("addFiles")} multiple disabled={busy || blocked} onFiles={onUpload} />
+
+      {library.length > 0 ? (
+        <details className="rounded-xl border border-white/10 bg-black/20 p-3">
+          <summary className="cursor-pointer text-sm font-medium">{t("results.fromLibrary")}</summary>
+          <ul className="mt-2 grid gap-1.5">
+            {library.map((document) => (
+              <li key={document.document_id}>
+                <label className="flex min-h-9 items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-emerald-400"
+                    checked={picked.includes(document.document_id)}
+                    onChange={() =>
+                      setPicked((current) =>
+                        current.includes(document.document_id)
+                          ? current.filter((item) => item !== document.document_id)
+                          : [...current, document.document_id],
+                      )
+                    }
+                  />
+                  <span className="min-w-0 flex-1 truncate">{document.original_name}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="mt-2"
+            disabled={busy || blocked || picked.length === 0}
+            onClick={() => {
+              const chosen = library.filter((document) => picked.includes(document.document_id));
+              setPicked([]);
+              onLibrary(chosen);
+            }}
+          >
+            {t("results.addSelected")}
+          </Button>
+        </details>
+      ) : null}
+
+      <Button type="button" disabled={busy || blocked || !canMatch} onClick={onMatch}>
+        {busy ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : null}
+        {t("match")}
+      </Button>
+      {!canMatch && !blocked ? <p className="text-xs leading-5 text-muted">{t("results.matchHint")}</p> : null}
+      <p className="text-xs leading-5 text-muted">{t("results.matchWording")}</p>
     </Card>
   );
 }
@@ -458,21 +533,32 @@ function EvidencePanel({
 function FileList({ analysis }: { analysis: Analysis }) {
   const { t } = useI18n();
   return (
-    <Card className="p-4">
-      <h2 className="font-semibold">{t("filesHeading")}</h2>
+    <Card className="p-4" aria-labelledby="files-heading">
+      <h2 id="files-heading" className="font-semibold">
+        {t("filesHeading")}
+      </h2>
       <ul className="mt-3 grid gap-3 text-sm">
         {analysis.files.map((file) => (
-          <li key={file.file_id} className="border-t border-border pt-3 first:border-0 first:pt-0">
+          <li key={file.file_id} className="border-t border-white/10 pt-3 first:border-0 first:pt-0">
             <p className="font-medium break-all">{file.original_name}</p>
             <p className="text-muted">
-              {file.role === "tender" ? t("tenderRole") : t("evidenceRole")} · {file.page_count} {t("pages").toLowerCase()}
+              {file.role === "tender" ? t("tenderRole") : t("evidenceRole")} · {file.page_count} {t("pagesShort")}
             </p>
-            {file.duplicate_of_file_id ? <p>{t("duplicate")}</p> : null}
+            {file.duplicate_of_file_id ? <p className="text-amber-200">{t("duplicate")}</p> : null}
             {file.unreadable_pages && file.unreadable_pages.length > 0 ? (
-              <p>
+              <p className="text-amber-200">
                 {t("notReadable")}: {file.unreadable_pages.join(", ")}
               </p>
             ) : null}
+            <a
+              href={analysisFileUrl(file.file_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-1 inline-flex min-h-8 items-center gap-1 text-mint underline-offset-4 hover:underline"
+            >
+              <ExternalLink aria-hidden="true" className="size-3.5" />
+              {t("results.openPdf")}
+            </a>
           </li>
         ))}
       </ul>
@@ -485,44 +571,26 @@ function PageList({ pages }: { pages: PagePreview[] }) {
   if (pages.length === 0) return null;
   return (
     <Card className="p-4">
-      <h2 className="font-semibold">{t("pages")}</h2>
-      <ul className="mt-3 grid max-h-[32rem] gap-3 overflow-auto text-sm">
-        {pages.map((page) => (
-          <li key={`${page.file_id}-${page.page_number}`} className="border-t border-border pt-3 first:border-0 first:pt-0">
-            <p className="font-medium">
-              {page.file_name} · {t("page")} {page.page_number}
-            </p>
-            <p className="text-muted">{page.usable ? t("readable") : t("notReadable")}</p>
-            {page.usable && page.preview ? (
-              <p className="mt-1 font-serif leading-6 select-text">{page.preview}</p>
-            ) : (
-              <p className="mt-1 text-muted">{t("unreadable")}</p>
-            )}
-          </li>
-        ))}
-      </ul>
+      <details>
+        <summary className="cursor-pointer font-semibold">
+          {t("pages")} ({pages.length})
+        </summary>
+        <ul className="mt-3 grid max-h-[28rem] gap-3 overflow-auto pr-1 text-sm">
+          {pages.map((page) => (
+            <li key={`${page.file_id}-${page.page_number}`} className="border-t border-white/10 pt-3 first:border-0 first:pt-0">
+              <p className="font-medium break-all">
+                {page.file_name} · {t("page")} {page.page_number}
+              </p>
+              <p className="text-muted">{page.usable ? t("readable") : t("notReadable")}</p>
+              {page.usable && page.preview ? (
+                <p className="mt-1 font-serif leading-6 select-text">{page.preview}</p>
+              ) : (
+                <p className="mt-1 text-amber-200">{t("unreadable")}</p>
+              )}
+            </li>
+          ))}
+        </ul>
+      </details>
     </Card>
   );
-}
-
-function labelFor(t: (path: string) => string, group: string, value: string) {
-  const key = `${group}.${value}`;
-  const text = t(key);
-  return text === key ? value : text;
-}
-
-function messageFor(caught: unknown, t: (path: string) => string) {
-  if (caught instanceof ApiError) {
-    const key = `errors.${caught.code}`;
-    const localized = t(key);
-    return localized === key ? caught.message : localized;
-  }
-  return t("errors.generic");
-}
-
-function reviewIcon(status: string) {
-  if (status === "confirmed" || status === "changed") return "completed";
-  if (status === "missing" || status === "expired" || status === "unclear") return "completed_with_unresolved_items";
-  if (status === "not_applicable") return "cancelled";
-  return "needs_review";
 }

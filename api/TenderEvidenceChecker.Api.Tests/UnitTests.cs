@@ -81,7 +81,7 @@ public class UnitTests
                 Text = paragraph,
                 Usable = true
             }
-        ], CancellationToken.None);
+        ], "az", CancellationToken.None);
 
         var row = Assert.Single(result.Requirements);
         Assert.Equal("uncertain", row.RequirementClass);
