@@ -1,0 +1,9 @@
+data/
+uploads/
+.env
+*.db
+*.db-*
+**/bin/
+**/obj/
+node_modules/
+web/.next/

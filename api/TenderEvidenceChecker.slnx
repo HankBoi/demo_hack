@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="TenderEvidenceChecker.Api.Tests/TenderEvidenceChecker.Api.Tests.csproj" />
+  <Project Path="TenderEvidenceChecker.Api/TenderEvidenceChecker.Api.csproj" />
+</Solution>
